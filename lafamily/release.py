@@ -7,6 +7,6 @@ with (Path(__file__).resolve().parent.parent / "pyproject.toml").open("rb") as m
     VERSION = tomllib.load(metadata)["project"]["version"]
 
 LATEST_UPDATE = (
-    "Автоматическая регистрация команд при запуске main.py; недельные премии "
-    "и единая настройка наград за участие, победу и MVP."
+    "Руководство может редактировать и подтверждать открытые отчёты организаторов; "
+    "выбор победы и MVP доступен в форме подтверждения."
 )

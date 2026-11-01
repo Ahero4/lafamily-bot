@@ -165,7 +165,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(payout["options"][1].get("required", False))
             self.assertEqual({c["value"] for c in payout["options"][1]["choices"]}, {0, -1})
             report = next(item for item in event if item["name"] == "отчёт")
-            self.assertEqual([item["name"] for item in report["options"]], ["вид", "дата", "примечание", "голосовой-канал", "итог", "mvp"])
+            self.assertEqual([item["name"] for item in report["options"]], ["вид", "дата", "примечание", "голосовой-канал"])
             self.assertTrue(report["options"][0]["autocomplete"])
         finally:
             await bot.close()

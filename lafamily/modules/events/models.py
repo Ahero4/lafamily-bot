@@ -23,3 +23,7 @@ class Draft:
     win_bonus: int = 0
     mvp_id: str | None = None
     mvp_bonus: int = 0
+    # Доступные награды фиксируются отдельно от выбранных начислений.
+    win_enabled: bool = False
+    available_win_bonus: int = 0
+    available_mvp_bonus: int = 0

@@ -118,17 +118,33 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(choices[0].value,'МП')
         self.assertNotIn('бонусы',[c.name for c in self.commands.commands])
 
-    async def test_outcome_required_when_enabled_and_disabled_otherwise(self):
+    async def test_outcome_required_in_view_only_when_enabled(self):
         self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
-        with self.assertRaises(UserError):await self.commands.create_report.callback(self.commands,self.interaction(),str(self.kind))
-        self.store.configure_event_bonuses(G,A,self.kind,False,15,7)
-        with self.assertRaises(UserError):await self.commands.create_report.callback(self.commands,self.interaction(),str(self.kind),outcome='win')
+        interaction=self.interaction()
+        await self.commands.create_report.callback(self.commands,interaction,str(self.kind))
+        view=self.service.views[(G,A)]
+        view.draft.members=[A,B]
+        self.assertTrue(view.payload()['view'].confirm.disabled)
+        with self.assertRaises(UserError):await self.service.confirm(interaction,view)
+        await view.dispatch('outcome',interaction,'win')
+        self.assertEqual(view.draft.win_bonus,15)
+        self.assertFalse(view.confirm.disabled)
+        await view.dispatch('outcome',interaction,'no_win')
+        self.assertEqual(view.draft.win_bonus,0)
+        self.store.configure_event_bonuses(G,A,self.kind,False,0,0)
+        await self.commands.create_report.callback(self.commands,interaction,str(self.kind))
+        view=self.service.views[(G,A)]
+        self.assertNotIn(view.select_outcome,view.children)
+        self.assertNotIn(view.select_mvp,view.children)
 
     async def test_organizer_draft_snapshots_rewards_and_checks_mvp_roster(self):
         self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
         interaction=self.interaction()
-        await self.commands.create_report.callback(self.commands,interaction,str(self.kind),outcome='win',mvp=SimpleNamespace(id=int(B),bot=False))
+        await self.commands.create_report.callback(self.commands,interaction,str(self.kind))
         view=self.service.views[(G,A)]
+        view.draft.members=[A,B]
+        await view.dispatch('outcome',interaction,'win')
+        await view.dispatch('mvp',interaction,[SimpleNamespace(id=int(B),bot=False)])
         self.assertEqual((view.draft.win_bonus,view.draft.mvp_bonus),(15,7))
         self.assertIn('25 очк.',view.payload()['content'])
         view.draft.members=[A]
@@ -140,3 +156,76 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         interaction.guild.fetch_member=AsyncMock(return_value=SimpleNamespace(bot=False))
         await self.service.confirm(interaction,view)
         self.assertEqual(self.store.statistics(G,week_range(),B)[0]['points'],32)
+
+    async def test_selection_mvp_validation_clear_permissions_and_snapshot(self):
+        self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
+        interaction=self.interaction()
+        await self.commands.create_report.callback(self.commands,interaction,str(self.kind))
+        view=self.service.views[(G,A)]
+        view.draft.members=[A,B]
+        self.assertEqual(len({item.row for item in view.children}),5)
+        for member in (SimpleNamespace(id=555555555555555555,bot=False),SimpleNamespace(id=int(B),bot=True)):
+            with self.assertRaises(UserError):await view.dispatch('mvp',interaction,[member])
+        foreign=self.interaction('organizer');foreign.user.id=int(B)
+        with self.assertRaises(UserError):await view.dispatch('outcome',foreign,'win')
+        self.store.configure_event_bonuses(G,A,self.kind,True,99,100)
+        await view.dispatch('outcome',interaction,'win')
+        await view.dispatch('mvp',interaction,[SimpleNamespace(id=int(B),bot=False)])
+        self.assertEqual((view.draft.win_bonus,view.draft.mvp_bonus),(15,7))
+        await view.dispatch('mvp',interaction,[])
+        self.assertEqual((view.draft.mvp_id,view.draft.mvp_bonus),(None,0))
+        await view.dispatch('mvp',interaction,[SimpleNamespace(id=int(A),bot=False)])
+        self.assertEqual(view.draft.mvp_id,A)
+
+    async def test_failed_selection_does_not_apply_unseen_rewards(self):
+        self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
+        interaction=self.interaction()
+        await self.commands.create_report.callback(self.commands,interaction,str(self.kind))
+        view=self.service.views[(G,A)]
+        view.draft.members=[A,B]
+        interaction.edit_original_response.side_effect=RuntimeError('network')
+        with self.assertRaises(RuntimeError):await view.dispatch('outcome',interaction,'win')
+        self.assertEqual((view.draft.outcome,view.draft.win_bonus),('',0))
+        with self.assertRaises(RuntimeError):await view.dispatch('mvp',interaction,[SimpleNamespace(id=int(B),bot=False)])
+        self.assertEqual((view.draft.mvp_id,view.draft.mvp_bonus),(None,0))
+        self.assertTrue(view.needs_refresh)
+
+    async def test_manager_changes_foreign_draft_and_confirms_without_changing_author(self):
+        self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
+        owner=self.interaction()
+        await self.commands.create_report.callback(self.commands,owner,str(self.kind))
+        view=self.service.views[(G,A)]
+        view.draft.members=[A,B]
+        manager=self.interaction('manager');manager.user.id=int(B)
+        await view.dispatch('outcome',manager,'win')
+        await view.dispatch('mvp',manager,[SimpleNamespace(id=int(B),bot=False)])
+        self.service.channel=AsyncMock(return_value=SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=123))))
+        manager.guild.fetch_member=AsyncMock(return_value=SimpleNamespace(bot=False))
+        await view.dispatch('confirm',manager)
+        self.assertTrue(view.finished)
+        report=self.store.report(G,1)
+        self.assertEqual((report['organizer_id'],report['points'],report['mvp_id']),(A,25,B))
+        self.assertEqual(self.store.statistics(G,week_range(),B)[0]['points'],32)
+        with self.assertRaises(UserError):await view.dispatch('clear',manager)
+
+    async def test_draft_controls_check_current_role_owner_server_and_admin(self):
+        owner=self.interaction()
+        await self.commands.create_report.callback(self.commands,owner,str(self.kind))
+        view=self.service.views[(G,A)];view.draft.members=[A,B]
+        await view.validate(owner)
+        for role in ('organizer','member'):
+            other=self.interaction(role);other.user.id=int(B)
+            with self.assertRaises(UserError):await view.dispatch('clear',other)
+            self.assertEqual(view.draft.members,[A,B])
+        manager=self.interaction('manager');manager.user.id=int(B)
+        await view.validate(manager)
+        manager.user.roles=[]
+        with self.assertRaises(UserError):await view.dispatch('clear',manager)
+        admin=self.interaction('member');admin.user.id=int(B)
+        admin.permissions=discord.Permissions(administrator=True)
+        await view.dispatch('clear',admin)
+        self.assertEqual(view.draft.members,[])
+        admin.guild_id=999
+        with self.assertRaises(UserError):await view.validate(admin)
+        owner.user.roles=[]
+        with self.assertRaises(UserError):await view.validate(owner)

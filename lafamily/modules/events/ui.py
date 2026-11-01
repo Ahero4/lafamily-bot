@@ -48,7 +48,7 @@ def report_embed(report: dict) -> discord.Embed:
 
 
 class ReportView(discord.ui.View):
-    """Один черновик живёт 14 минут, только его организатор может менять состав."""
+    """Черновик живёт 14 минут; им управляют автор и руководство сервера."""
 
     def __init__(self, service: "EventService", draft: Draft):
         # Запас до истечения 15-минутного токена Discord позволяет отключить кнопки вовремя.
@@ -62,6 +62,10 @@ class ReportView(discord.ui.View):
         self.pending = []  # Совместимость с проверками старого интерфейса; самозапись сразу идёт в состав.
         self.original = None
         self.expiry_handle = None
+        if not draft.win_enabled:
+            self.remove_item(self.select_outcome)
+        if not draft.available_mvp_bonus:
+            self.remove_item(self.select_mvp)
         # Свой ID у каждого компонента позволяет отличить разные черновики.
         for item in self.children:
             item.custom_id = f"mp:{item.custom_id}:{draft.request_id}"
@@ -69,9 +73,12 @@ class ReportView(discord.ui.View):
     async def validate(self, interaction: discord.Interaction):
         if self.finished or time.monotonic() >= self.expires_at:
             raise UserError("Черновик истёк или уже обработан. Создайте новый через /мп отчёт.")
-        if str(interaction.guild_id) != self.draft.guild_id or str(interaction.user.id) != self.draft.organizer_id:
-            raise UserError("Это черновик другого организатора.")
-        await require_access_async(interaction, self.service.store, "organizer")
+        if str(interaction.guild_id) != self.draft.guild_id:
+            raise UserError("Черновик относится к другому серверу.")
+        # Автор управляет своим черновиком; чужим — только руководство или admin.
+        # Права читаются заново при каждом действии, включая открытые ранее меню.
+        level = "organizer" if str(interaction.user.id) == self.draft.organizer_id else "manager"
+        await require_access_async(interaction, self.service.store, level)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         try:
@@ -85,7 +92,8 @@ class ReportView(discord.ui.View):
 
     def payload(self, members=None) -> dict:
         members = self.draft.members if members is None else members
-        self.confirm.disabled = self.finished or not members
+        self.confirm.disabled = (self.finished or not members
+                                 or (self.draft.win_enabled and not self.draft.outcome))
         embed = discord.Embed(colour=0x7289DA)
         add_members(embed, members)
         pending = [member for member in self.pending if member not in members]
@@ -94,6 +102,10 @@ class ReportView(discord.ui.View):
                 value=" ".join(f"<@{member}>" for member in pending[offset:offset + 25]), inline=False)
         if self.draft.voice_channel_id:
             embed.add_field(name="Голосовой канал МП", value=f"<#{self.draft.voice_channel_id}>", inline=False)
+        if self.draft.win_enabled and not self.draft.outcome:
+            embed.add_field(name="Итог", value="Выберите Победа / Без победы в меню ниже.")
+        if self.draft.available_mvp_bonus and not self.draft.mvp_id:
+            embed.add_field(name="MVP", value=f"Не выбран • можно назначить одного участника состава (+{self.draft.available_mvp_bonus} очк.).")
         if self.draft.outcome:
             embed.add_field(name="Итог", value=("Победа" if self.draft.outcome == "win" else "Без победы") + f" • +{self.draft.win_bonus} каждому")
         if self.draft.mvp_id:
@@ -104,7 +116,7 @@ class ReportView(discord.ui.View):
             f"{display_date(self.draft.occurred_at)} (Москва)\n{note}"
             f"Подтверждено: **{len(members)}** · Ожидают проверки: **{len(pending)}** · Всего: **{len(members) + len(pending)}**.\n"
             "Нажмите «Участвовать» — вы сразу попадёте в состав МП.\n"
-            "Организатор может добавить людей через меню. Итоговое подтверждение начислит баллы всему составу. До 100 участников.\n"
+            "Автор и руководство могут менять состав, результат и MVP. Итоговое подтверждение начислит баллы всему составу. До 100 участников.\n"
             "Черновик действует 14 минут. Подтверждение сохранит отчёт и начислит очки."
         )
         return {"content": content, "embeds": [embed] if members or self.pending or self.draft.voice_channel_id or self.draft.outcome or self.draft.mvp_id else [], "view": self,
@@ -161,6 +173,32 @@ class ReportView(discord.ui.View):
                 await interaction.edit_original_response(content="Оставшиеся заявки отклонены. Проверьте подтверждённый состав и нажмите «Подтвердить отчёт».", embeds=[], view=self)
                 self.pending = []
                 await interaction.edit_original_response(**self.payload())
+                return
+            if action in ("outcome", "mvp"):
+                # Изменения сериализуются с составом и подтверждением. При сетевом
+                # сбое откатываем непоказанный выбор, сохраняя снимок ставок.
+                old = (self.draft.outcome, self.draft.win_bonus, self.draft.mvp_id, self.draft.mvp_bonus)
+                if action == "outcome":
+                    if not self.draft.win_enabled or selected not in ("win", "no_win"):
+                        raise UserError("Выбор результата недоступен.")
+                    self.draft.outcome = selected
+                    self.draft.win_bonus = self.draft.available_win_bonus if selected == "win" else 0
+                else:
+                    if not self.draft.available_mvp_bonus:
+                        raise UserError("Награда MVP не настроена для этого вида МП.")
+                    member = selected[0] if selected else None
+                    if member and (member.bot or str(member.id) not in self.draft.members):
+                        raise UserError("MVP должен быть участником состава и не быть ботом. Сначала добавьте его в состав.")
+                    self.draft.mvp_id = str(member.id) if member else None
+                    self.draft.mvp_bonus = self.draft.available_mvp_bonus if member else 0
+                try:
+                    await interaction.edit_original_response(**self.payload())
+                except BaseException:
+                    self.draft.outcome, self.draft.win_bonus, self.draft.mvp_id, self.draft.mvp_bonus = old
+                    self.payload()
+                    self.needs_refresh = True
+                    raise
+                self.needs_refresh = False
                 return
             if action == "clear":
                 members = []
@@ -243,3 +281,14 @@ class ReportView(discord.ui.View):
         await self.dispatch("discard", interaction)
 
 
+
+    @discord.ui.select(custom_id="outcome", placeholder="Организатор: выбрать результат", row=3,
+                       options=[discord.SelectOption(label="Победа", value="win"),
+                                discord.SelectOption(label="Без победы", value="no_win")])
+    async def select_outcome(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await self.dispatch("outcome", interaction, select.values[0])
+
+    @discord.ui.select(cls=discord.ui.UserSelect, custom_id="mvp", placeholder="Организатор: выбрать MVP (очистить — без MVP)",
+                       min_values=0, max_values=1, row=4)
+    async def select_mvp(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        await self.dispatch("mvp", interaction, select.values)

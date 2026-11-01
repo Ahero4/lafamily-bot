@@ -58,10 +58,12 @@ class EventService:
         draft = view.draft
         if getattr(view, "pending", []):
             raise UserError("Не все заявки проверены. Подтвердите или отклоните оставшиеся заявки перед сохранением.")
+        if draft.win_enabled and draft.outcome not in ("win", "no_win"):
+            raise UserError("Выберите результат в меню подтверждения: Победа или Без победы.")
         if not draft.members:
             raise UserError("Сначала выберите хотя бы одного участника.")
         if draft.mvp_id and draft.mvp_id not in draft.members:
-            raise UserError("MVP отсутствует в составе. Добавьте его через меню участников или создайте отчёт с другим MVP.")
+            raise UserError("MVP отсутствует в составе. Добавьте его в состав или измените MVP в меню подтверждения.")
         channel = await self.channel(interaction.guild, draft.channel_id)
 
         async def fetch_member(member_id):

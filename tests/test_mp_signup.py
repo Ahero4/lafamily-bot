@@ -1,6 +1,8 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import discord
+from lafamily.database import Store
 from lafamily.modules.events.ui import ReportView
 from lafamily.modules.events.models import Draft
 from lafamily.errors import UserError
@@ -8,9 +10,11 @@ from lafamily.errors import UserError
 class SignupTests(unittest.IsolatedAsyncioTestCase):
     async def test_signup_immediately_joins_roster_and_duplicate_is_ignored(self):
         draft = Draft('1', '2', '3', 1, 'МП', 5, '2026-10-28T10:00:00+00:00')
-        view = ReportView(SimpleNamespace(views={}), draft)
+        store = Store(':memory:')
+        self.addCleanup(store.close)
+        view = ReportView(SimpleNamespace(views={}, store=store), draft)
         self.addCleanup(view.finish)
-        interaction = SimpleNamespace(guild_id=1, user=SimpleNamespace(id=4, bot=False),
+        interaction = SimpleNamespace(guild_id=1, guild=SimpleNamespace(), permissions=discord.Permissions.none(), user=SimpleNamespace(id=4, bot=False),
             response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()))
         await view.join.callback(interaction)
         self.assertEqual(view.pending, [])

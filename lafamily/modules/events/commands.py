@@ -39,10 +39,9 @@ class EventCommands(app_commands.Group):
                 for kind in types if current.casefold() in kind["name"].casefold()][:25]
 
     @app_commands.command(name="отчёт", description="Создать отчёт о мероприятии", extras={"access": "organizer"})
-    @app_commands.rename(kind="вид", date="дата", note="примечание", voice="голосовой-канал", outcome="итог", mvp="mvp")
-    @app_commands.describe(kind="Выберите вид МП из подсказок", date="Выберите «Сегодня» или введите ГГГГ-ММ-ДД ЧЧ:ММ по Москве", note="Краткое примечание", voice="Добавить находящихся в голосовом канале участников", outcome="Победа или Без победы, если включено для вида МП", mvp="Один MVP: должен войти в итоговый состав; награда задаётся руководством")
-    @app_commands.choices(outcome=[app_commands.Choice(name="Победа", value="win"), app_commands.Choice(name="Без победы", value="no_win")])
-    async def create_report(self, interaction: discord.Interaction, kind: str, date: str | None = None, note: app_commands.Range[str, 1, 300] | None = None, voice: discord.VoiceChannel | None = None, outcome: str | None = None, mvp: discord.Member | None = None):
+    @app_commands.rename(kind="вид", date="дата", note="примечание", voice="голосовой-канал")
+    @app_commands.describe(kind="Выберите вид МП из подсказок", date="Выберите «Сегодня» или введите ГГГГ-ММ-ДД ЧЧ:ММ по Москве", note="Краткое примечание", voice="Добавить находящихся в голосовом канале участников")
+    async def create_report(self, interaction: discord.Interaction, kind: str, date: str | None = None, note: app_commands.Range[str, 1, 300] | None = None, voice: discord.VoiceChannel | None = None):
         # Фиксируем время до ожидания базы; повторное подтверждение его не меняет.
         created_at = datetime.now(UTC)
         await interaction.response.defer(thinking=True)
@@ -54,19 +53,12 @@ class EventCommands(app_commands.Group):
         event_type = await database_call(self.service.store, "event_type", guild_id, int(kind)) if kind.isascii() and kind.isdigit() else None
         if not event_type:
             raise UserError("Выберите активный вид МП из подсказок.")
-        if event_type["win_enabled"]:
-            if outcome not in ("win", "no_win"):
-                raise UserError("Для этого вида МП выберите итог: Победа или Без победы.")
-        elif outcome is not None:
-            raise UserError("Выбор итога для этого вида МП отключён руководством.")
-        if mvp and (not event_type["mvp_bonus"] or mvp.bot):
-            raise UserError("Для MVP нужна настроенная награда; выбрать бота нельзя.")
         draft = Draft(
             guild_id=guild_id, organizer_id=str(interaction.user.id), channel_id=settings["channel_id"],
             type_id=event_type["id"], type_name=event_type["name"], points=event_type["points"],
             occurred_at=parse_event_date(date, now=created_at), note=note or "",
-            outcome=outcome or "", win_bonus=event_type["win_bonus"] if outcome == "win" else 0,
-            mvp_id=str(mvp.id) if mvp else None, mvp_bonus=event_type["mvp_bonus"] if mvp else 0,
+            win_enabled=bool(event_type["win_enabled"]),
+            available_win_bonus=event_type["win_bonus"], available_mvp_bonus=event_type["mvp_bonus"],
         )
         if voice is not None:
             # Снимок присутствующих на момент создания; боты не получают баллы.
