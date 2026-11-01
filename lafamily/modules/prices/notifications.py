@@ -5,6 +5,24 @@ from lafamily.async_database import database_call
 from .parser import LIMITS
 
 
+def bonus_price_text(report, item, price):
+    """Берём бонус у тех же скупщиков, что предлагают лучшую обычную цену."""
+    rows = ([(buyer, prices[item]) for buyer, prices in report.buyers.items()]
+            if LIMITS[item]['bonus'] is not None else [(None, report.products[item])])
+    best_rows = [(buyer, row) for buyer, row in rows if row.base == price]
+    values = {row.bonus for _, row in best_rows}
+    if len(values) == 1 and None not in values:
+        return f" (${next(iter(values))} с +20% за 3 часа)"
+    # Отчёты продуктов и некоторые источники не содержат бонусной цены.
+    # Расчёт явно отмечаем, чтобы не выдавать его за цену из игрового отчёта.
+    def describe(row):
+        return f"${row.bonus}" if row.bonus is not None else f"≈${row.base * 120 // 100} (расчёт)"
+    if len(values) == 1:
+        return f" ({describe(best_rows[0][1])} с +20% за 3 часа)"
+    prices = ', '.join(f"№{buyer}: {describe(row)}" for buyer, row in best_rows)
+    return f" ({prices}; +20% за 3 часа)"
+
+
 async def notify_maximum_prices(store, message, report):
     maxima = {}
     near = {}
@@ -25,13 +43,14 @@ async def notify_maximum_prices(store, message, report):
         grouped.setdefault((alert['item'], alert['threshold']), []).append(alert['user_id'])
     for (item, mode), users in grouped.items():
         price, places = (near if mode == 'near' else maxima)[item]
+        bonus = bonus_price_text(report, item, price)
         reason = 'цена 95–100% от максимума!' if mode == 'near' else 'достигнут справочный максимум!'
         # Не более 20 тегов за сообщение; роли и @everyone никогда не разрешены.
         for offset in range(0, len(users), 20):
             batch = users[offset:offset + 20]
             mentions = ' '.join(f'<@{user}>' for user in batch)
             await message.channel.send(
-                content=f'{mentions}\n🏆 **{item}: ${price}** — {reason} '
+                content=f'{mentions}\n🏆 **{item}: ${price}{bonus}** — {reason} '
                         f'Скупщик: {places}.\n'
                         f'https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}',
                 allowed_mentions=discord.AllowedMentions(
