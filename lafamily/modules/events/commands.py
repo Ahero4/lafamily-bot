@@ -12,6 +12,7 @@ from lafamily.errors import UserError
 from lafamily.async_database import database_call
 from lafamily.info import send_info, send_farm_info
 from lafamily.modules.events.models import Draft
+from lafamily.modules.events.payouts import send_payout
 from lafamily.modules.events.service import EventService
 from lafamily.modules.events.time import MOSCOW, display_date, parse_event_date, week_range
 from lafamily.modules.events.ui import report_embed
@@ -107,29 +108,34 @@ class EventCommands(app_commands.Group):
             raw = "\n".join(f"{kind['name']} — {kind['points']} очк." for kind in types)
             await interaction.edit_original_response(content="Список видов МП:", attachments=[discord.File(BytesIO(raw.encode("utf-8")), filename="event-types.txt")])
 
-    @app_commands.command(name="вид-добавить", description="Добавить вид МП или изменить его ставку", extras={"access": "manager"})
-    @app_commands.rename(name="название", points="очки")
-    @app_commands.describe(name="Точное совпадение названия обновляет ставку", points="Очки каждому участнику")
-    async def add_type(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 80], points: app_commands.Range[int, 0, 1000000]):
+    @app_commands.command(name="вид-добавить", description="Добавить вид МП или изменить его ставки", extras={"access": "manager"})
+    @app_commands.rename(name="название", points="очки", win="очки-победы", mvp="очки-mvp")
+    @app_commands.describe(name="Выберите существующее название для изменения или введите новое",
+                           points="Базовые очки; обязательны для нового вида, иначе сохраняются",
+                           win="Бонус каждому за победу; 0 отключает итог, пропуск сохраняет ставку",
+                           mvp="Дополнительные очки одному MVP; 0 отключает, пропуск сохраняет ставку")
+    async def add_type(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 80],
+                       points: app_commands.Range[int, 0, 1000000] | None = None,
+                       win: app_commands.Range[int, 0, 1000000] | None = None,
+                       mvp: app_commands.Range[int, 0, 1000000] | None = None):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction, self.service.store, "manager")
-        await database_call(self.service.store, "set_type", str(interaction.guild_id), str(interaction.user.id), name, points)
-        await interaction.edit_original_response(content="Вид МП сохранён. Новая ставка применяется к новым черновикам; прошлые отчёты сохраняют свои очки.")
+        kind = await database_call(self.service.store, "set_type", str(interaction.guild_id),
+                                   str(interaction.user.id), name, points, win, mvp)
+        await interaction.edit_original_response(content=(
+            f"Вид МП «{escape_markdown(kind['name'])}» сохранён (ID {kind['id']}). "
+            f"Базовые очки: {kind['points']}; победа: +{kind['win_bonus']}; MVP: +{kind['mvp_bonus']}. "
+            "Ставки применяются к новым черновикам; открытые черновики и прошлые отчёты не меняются."))
 
-    @app_commands.command(name="бонусы", description="Настроить выбор итога и награды за победу и MVP для вида МП", extras={"access": "manager"})
-    @app_commands.rename(kind="вид", enabled="выбор-итога", win="очки-победы", mvp="очки-mvp")
-    @app_commands.describe(enabled="Включить обязательный выбор Победа / Без победы", win="Дополнительные очки каждому за победу", mvp="Дополнительные очки одному MVP; 0 отключает MVP")
-    async def bonuses(self, interaction: discord.Interaction, kind: str, enabled: bool, win: app_commands.Range[int, 0, 1000000], mvp: app_commands.Range[int, 0, 1000000]):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        await require_access_async(interaction, self.service.store, "manager")
-        if not kind.isascii() or not kind.isdigit():
-            raise UserError("Выберите вид МП из подсказок.")
-        await database_call(self.service.store, "configure_event_bonuses", str(interaction.guild_id), str(interaction.user.id), int(kind), enabled, win, mvp)
-        await interaction.edit_original_response(content=f"Настройки новых черновиков сохранены. Выбор итога: {'включён' if enabled else 'выключен'}. За победу: +{win} каждому; MVP: +{mvp}. Старые черновики и отчёты не меняются.")
-
-    @bonuses.autocomplete("kind")
-    async def bonuses_autocomplete(self, interaction: discord.Interaction, current: str):
-        return await self.type_choices(interaction, current)
+    @add_type.autocomplete("name")
+    async def type_name_autocomplete(self, interaction: discord.Interaction, current: str):
+        # Возвращаем точное имя, чтобы редактирование не создавало новый вид.
+        try:
+            types = await asyncio.wait_for(database_call(self.service.store, "types", str(interaction.guild_id)), timeout=1)
+        except TimeoutError:
+            return []
+        return [app_commands.Choice(name=kind["name"], value=kind["name"])
+                for kind in types if current.casefold() in kind["name"].casefold()][:25]
 
     @app_commands.command(name="вид-отключить", description="Скрыть вид МП, сохранив историю", extras={"access": "manager"})
     @app_commands.rename(kind="вид")
@@ -177,6 +183,16 @@ class EventCommands(app_commands.Group):
             footer += f" • Дальше: /мп статистика страница:{page + 1}"
         embed.set_footer(text=footer)
         await interaction.edit_original_response(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name="выплата-премии", description="Рассчитать премии за неделю пропорционально баллам", extras={"access": "admin"})
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.rename(bank="банк-денег", week="неделя")
+    @app_commands.describe(bank="Банк денег в целых долларах: распределяется весь между участниками",
+                           week="Текущая или прошлая неделя по Москве; по умолчанию прошлая")
+    @app_commands.choices(week=WEEKS)
+    async def payout(self, interaction: discord.Interaction,
+                     bank: app_commands.Range[int, 1, 1000000000], week: int = -1):
+        await send_payout(interaction, self.service.store, bank, week)
 
     @app_commands.command(name="отменить", description="Отменить отчёт и убрать начисление", extras={"access": "manager"})
     @app_commands.rename(number="номер", reason="причина")

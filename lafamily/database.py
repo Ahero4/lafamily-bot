@@ -153,16 +153,33 @@ class Store:
                 "channel_id": channel_id, "organizer_role_ids": organizers, "manager_role_ids": managers,
             })
 
-    def set_type(self, guild_id: str, actor_id: str, name: str, points: int):
+    def set_type(self, guild_id: str, actor_id: str, name: str, points: int | None = None,
+                 win_bonus: int | None = None, mvp_bonus: int | None = None):
         name = name.strip()
         if not 1 <= len(name) <= 80:
             raise UserError("Название МП должно содержать от 1 до 80 символов.")
-        self.validate_points(points)
+        for value in (points, win_bonus, mvp_bonus):
+            if value is not None:
+                self.validate_points(value)
         with self.transaction():
-            self.db.execute("""INSERT INTO event_types(guild_id, name, points) VALUES (?, ?, ?)
-                ON CONFLICT(guild_id, name) DO UPDATE SET points=excluded.points, active=1""",
-                (guild_id, name, points))
-            self.audit(guild_id, actor_id, "type.updated", {"name": name, "points": points})
+            # Обновляем тот же вид; пропущенные ставки сохраняются, явный 0 отключает бонус.
+            previous = self.db.execute("SELECT * FROM event_types WHERE guild_id=? AND name=?",
+                                       (guild_id, name)).fetchone()
+            if previous is None and points is None:
+                raise UserError("Для нового вида МП укажите базовые очки.")
+            base = points if points is not None else previous["points"]
+            win = win_bonus if win_bonus is not None else (previous["win_bonus"] if previous else 0)
+            mvp = mvp_bonus if mvp_bonus is not None else (previous["mvp_bonus"] if previous else 0)
+            enabled = int(win > 0) if win_bonus is not None else (previous["win_enabled"] if previous else 0)
+            self.db.execute("""INSERT INTO event_types(guild_id, name, points, win_enabled, win_bonus, mvp_bonus)
+                VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(guild_id, name) DO UPDATE SET
+                points=excluded.points, win_enabled=excluded.win_enabled,
+                win_bonus=excluded.win_bonus, mvp_bonus=excluded.mvp_bonus, active=1""",
+                (guild_id, name, base, enabled, win, mvp))
+            self.audit(guild_id, actor_id, "type.updated",
+                       {"name": name, "points": base, "win_bonus": win, "mvp_bonus": mvp, "win_enabled": enabled})
+            return dict(self.db.execute("SELECT * FROM event_types WHERE guild_id=? AND name=?",
+                                        (guild_id, name)).fetchone())
 
     @staticmethod
     def validate_points(points: int):

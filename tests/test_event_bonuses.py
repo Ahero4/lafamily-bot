@@ -57,6 +57,31 @@ class BonusStorageTests(unittest.TestCase):
         with self.assertRaises(UserError):self.store.configure_event_bonuses('other',A,self.kind,True,15,7)
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM reports').fetchone()[0],0)
 
+    def test_edit_rates_preserves_identity_history_and_omitted_values(self):
+        self.store.set_type(G,A,'МП',10,15,7)
+        draft=self.draft(outcome='win',win_bonus=15,mvp_id=B,mvp_bonus=7)
+        old=self.store.create_report(draft)
+        self.store.set_type(G,A,'МП',points=30)
+        kind=self.store.event_type(G,self.kind)
+        self.assertEqual((kind['points'],kind['win_bonus'],kind['mvp_bonus'],kind['win_enabled']),(30,15,7,1))
+        self.assertEqual(len(self.store.types(G)),1)
+        self.assertEqual(self.store.report(G,old['id'])['points'],25)
+        self.assertEqual((draft.points,draft.win_bonus,draft.mvp_bonus),(10,15,7))
+        self.store.set_type(G,A,'МП',win_bonus=0,mvp_bonus=0)
+        kind=self.store.event_type(G,self.kind)
+        self.assertEqual((kind['points'],kind['win_bonus'],kind['mvp_bonus'],kind['win_enabled']),(30,0,0,0))
+
+    def test_new_type_requires_base_and_invalid_update_is_atomic(self):
+        with self.assertRaises(UserError):self.store.set_type(G,A,'Новый',win_bonus=5)
+        for kwargs in ({'win_bonus':-1},{'mvp_bonus':1000001},{'points':True}):
+            with self.assertRaises(UserError):self.store.set_type(G,A,'МП',**kwargs)
+        self.assertEqual(self.store.event_type(G,self.kind)['points'],10)
+        self.assertEqual(len(self.store.types(G)),1)
+        kind=self.store.set_type(G,A,'Новый',0)
+        self.assertEqual((kind['win_bonus'],kind['mvp_bonus'],kind['win_enabled']),(0,0,0))
+        self.store.disable_type(G,A,self.kind)
+        self.assertEqual(self.store.set_type(G,A,'МП',25)['id'],self.kind)
+
     def test_migration_preserves_legacy_report_and_reopens(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'legacy.sqlite'
@@ -81,10 +106,17 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
     def interaction(self,role='organizer'):
         return SimpleNamespace(guild_id=int(G),user=SimpleNamespace(id=int(A),roles=[SimpleNamespace(id=role)]),guild=SimpleNamespace(),permissions=discord.Permissions.none(),response=SimpleNamespace(defer=AsyncMock()),edit_original_response=AsyncMock())
 
-    async def test_only_manager_configures_bonuses(self):
-        with self.assertRaises(UserError):await self.commands.bonuses.callback(self.commands,self.interaction(),str(self.kind),True,15,7)
-        await self.commands.bonuses.callback(self.commands,self.interaction('manager'),str(self.kind),True,15,7)
-        self.assertEqual(self.store.event_type(G,self.kind)['win_bonus'],15)
+    async def test_only_manager_updates_type_and_preserves_id(self):
+        with self.assertRaises(UserError):
+            await self.commands.add_type.callback(self.commands,self.interaction(),'МП',10,15,7)
+        await self.commands.add_type.callback(self.commands,self.interaction('manager'),'МП',10,15,7)
+        await self.commands.add_type.callback(self.commands,self.interaction('manager'),'МП',win=20)
+        kind=self.store.event_type(G,self.kind)
+        self.assertEqual((kind['points'],kind['win_bonus'],kind['mvp_bonus']),(10,20,7))
+        self.assertEqual(len(self.store.types(G)),1)
+        choices=await self.commands.type_name_autocomplete(self.interaction('manager'),'М')
+        self.assertEqual(choices[0].value,'МП')
+        self.assertNotIn('бонусы',[c.name for c in self.commands.commands])
 
     async def test_outcome_required_when_enabled_and_disabled_otherwise(self):
         self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
