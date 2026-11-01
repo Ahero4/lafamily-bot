@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.utils import escape_markdown
 
 from lafamily.errors import UserError
+from lafamily.release import VERSION, LATEST_UPDATE
 from lafamily.async_database import database_call
 from lafamily.info import send_info, send_farm_info
 from lafamily.modules.events.models import Draft
@@ -287,6 +288,8 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
         # Публичный ответ отправляется только по команде участника, без массовых упоминаний.
         await interaction.response.send_message(
             "🟢 **LaFamily Bot запущен и готов к работе!**\n"
+            f"**Версия:** {VERSION}\n"
+            f"**Последнее обновление:** {LATEST_UPDATE}\n\n"
             "Команды и права: `/инфо общее` · Скупщики и подписки: `/инфо фарм`.",
             allowed_mentions=discord.AllowedMentions.none())
 

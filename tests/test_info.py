@@ -130,6 +130,14 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         await command.callback(interaction)
         call = interaction.response.send_message.call_args
         self.assertIn('запущен и готов к работе', call.args[0])
+        from lafamily.release import VERSION, LATEST_UPDATE
+        from pathlib import Path
+        import tomllib
+        metadata = tomllib.loads((Path(__file__).resolve().parent.parent / 'pyproject.toml').read_text(encoding='utf-8'))
+        self.assertEqual(VERSION, metadata['project']['version'])
+        self.assertIn(f'**Версия:** {VERSION}', call.args[0])
+        self.assertIn(f'**Последнее обновление:** {LATEST_UPDATE}', call.args[0])
+        self.assertLessEqual(len(call.args[0]), 2000)
         self.assertFalse(call.kwargs.get('ephemeral', False))
         self.assertEqual(call.kwargs['allowed_mentions'].to_dict(), {'parse': []})
 
