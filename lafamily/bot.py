@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from lafamily.config import Config
+from lafamily.modules.release_updates import ReleaseUpdates, register_release_updates
 from lafamily.errors import UserError
 from lafamily.database import Store
 from lafamily.modules.events.commands import install_commands
@@ -53,6 +54,8 @@ class FamilyBot(discord.Client):
         self.onboarding = OnboardingService(store)
         register_onboarding(self.tree, self.onboarding, config.guild_id)
         register_nickname_command(self.tree, store, config.guild_id)
+        self.release_updates = ReleaseUpdates(self, store, config.guild_id)
+        register_release_updates(self.tree, self.release_updates, config.guild_id)
         self.prices = PriceService(self, store, config.guild_id)
         register_price_commands(self.tree, self.prices, config.guild_id)
 
@@ -77,6 +80,7 @@ class FamilyBot(discord.Client):
 
     async def on_ready(self):
         logger.info("LaFamily запущен: %s", self.user)
+        await self.release_updates.announce()
 
     async def on_error(self, event_method: str, *args, **kwargs):
         # Не выводим аргументы событий: они могут содержать приватные данные.

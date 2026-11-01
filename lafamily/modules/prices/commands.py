@@ -61,6 +61,7 @@ def register_price_commands(tree, service, guild_id):
         if interaction.guild_id != service.guild_id:
             raise UserError('Команда доступна только на настроенном сервере семьи.')
         items = await database_call(service.store, 'price_subscriptions', str(interaction.guild_id), str(interaction.user.id))
-        view = PriceSubscriptionView(service, interaction, items)
+        modes = await database_call(service.store, 'price_subscription_modes', str(interaction.guild_id), str(interaction.user.id))
+        view = PriceSubscriptionView(service, interaction, items, modes)
         await interaction.edit_original_response(content=view.prompt(), view=view,
                                                  allowed_mentions=discord.AllowedMentions.none())

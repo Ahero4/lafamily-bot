@@ -77,4 +77,26 @@ class SubscriptionMenuTests(unittest.IsolatedAsyncioTestCase):
         select = components[0]['components'][0]
         self.assertEqual(select['max_values'], 20)
         self.assertEqual(len(select['options']), 20)
-        self.assertEqual([item['label'] for item in components[1]['components']], ['Подтвердить', 'Отмена'])
+        self.assertEqual([item['label'] for item in components[3]['components']], ['Подтвердить', 'Отмена'])
+
+    async def test_global_mode_then_item_override_saved_only_on_confirm(self):
+        await self.view.choose(self.interaction,['Медь','Карп'])
+        await self.view.choose_mode(self.interaction,'near')
+        self.assertEqual(self.store.price_subscription_modes('1','123'),{'Медь':'max'})
+        self.view.scope_item='Карп'
+        await self.view.choose_mode(self.interaction,'max')
+        self.assertEqual(self.view.modes,{'Медь':'near','Карп':'max'})
+        await self.view.save(self.interaction)
+        saved=self.store.price_subscription_modes('1','123')
+        self.assertEqual(saved,{'Медь':'near','Карп':'max'})
+        reopened=PriceSubscriptionView(self.service,self.interaction,list(saved),saved)
+        self.addCleanup(reopened.stop)
+        self.assertEqual(reopened.modes,saved)
+
+    async def test_invalid_scope_mode_and_foreign_user_do_not_save(self):
+        with self.assertRaises(UserError):await self.view.choose_mode(self.interaction,'bad')
+        self.view.scope_item='Рубин'
+        with self.assertRaises(UserError):await self.view.choose_mode(self.interaction,'near')
+        self.interaction.user.id=999
+        with self.assertRaises(UserError):await self.view.choose_mode(self.interaction,'near')
+        self.assertEqual(self.store.price_subscription_modes('1','123'),{'Медь':'max'})

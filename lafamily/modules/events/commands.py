@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.utils import escape_markdown
 
 from lafamily.errors import UserError
+from lafamily.modules.admin_start import admin_setup_guide
 from lafamily.release import VERSION, LATEST_UPDATE
 from lafamily.async_database import database_call
 from lafamily.info import send_info, send_farm_info
@@ -286,7 +287,10 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
             allowed_mentions=discord.AllowedMentions.none())
 
 
-    @tree.command(name="старт", description="Короткое знакомство с ботом: первые шаги для новичка", guild=guild, extras={"access": "all"})
+    start_group = app_commands.Group(name="старт", description="Первые шаги участника и настройка администратором")
+    tree.add_command(start_group, guild=guild)
+
+    @start_group.command(name="участник", description="Короткое знакомство с ботом: первые шаги для новичка", extras={"access": "all"})
     @app_commands.guild_only()
     async def start_command(interaction: discord.Interaction):
         # Личное приветствие без административных инструкций и полного каталога команд.
@@ -303,12 +307,21 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
             "`/статистика рейтинг` — результаты участников семьи.", inline=False)
         embed.add_field(name="4 · Лови выгодные цены", value=
             "`/скупщик-уведомление` → отметь нужные товары → **Подтвердить**.\n"
-            "Бот тегнет тебя в канале цен при достижении справочного максимума обычной цены. "
+            "Выбери порог обычной цены: 95–100% или максимум, для всех товаров или каждого отдельно. "
             "В той же команде можно изменить подписки или отключить их.", inline=False)
         embed.add_field(name="Если хочется разобраться подробнее", value=
             "🌾 `/инфо фарм` — цены и подписки.\n"
             "📖 `/инфо общее` или `/помощь` — все команды и права.\n"
             "Не хватает доступа? Обратись к руководству семьи.", inline=False)
-        embed.set_footer(text="Это сообщение видишь только ты. Вернуться к нему можно командой /старт.")
+        embed.set_footer(text="Это сообщение видишь только ты. Вернуться к нему можно командой /старт участник.")
         await interaction.response.send_message(embed=embed, ephemeral=True,
                                                 allowed_mentions=discord.AllowedMentions.none())
+
+    @start_group.command(name="администратор", description="Порядок настройки бота с нуля после передеплоя", extras={"access": "admin"})
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    async def admin_start(interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await require_access_async(interaction, service.store, "admin")
+        await interaction.edit_original_response(embeds=admin_setup_guide(),
+                                                 allowed_mentions=discord.AllowedMentions.none())

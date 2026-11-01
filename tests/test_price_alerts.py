@@ -176,3 +176,65 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         await service.cleanup_channel(source)
         current.delete.assert_not_awaited()
         self.assertEqual(old.delete.await_count, 2)
+
+    async def test_near_boundaries_and_independent_maximum_cycles(self):
+        self.store.replace_price_subscriptions('1','123',['Медь'],{'Медь':'near'})
+        self.store.set_price_subscription('1','456','Медь',True)
+        # Максимум меди 60: 57 — ровно 95%, 56 — ниже порога.
+        def report(price):
+            return parse_prices(EXAMPLE.replace('- Медь: $36 ($43)',f'- Медь: ${price} ($72)'))
+        await notify_maximum_prices(self.store,self.message,report(56))
+        self.channel.send.assert_not_awaited()
+        self.message.id+=1
+        await notify_maximum_prices(self.store,self.message,report(57))
+        self.assertEqual(self.channel.send.await_count,1)
+        self.assertIn('<@123>',self.channel.send.call_args.kwargs['content'])
+        self.assertIn('95–100%',self.channel.send.call_args.kwargs['content'])
+        self.message.id+=1
+        await notify_maximum_prices(self.store,self.message,report(60))
+        self.assertEqual(self.channel.send.await_count,2)
+        self.assertIn('<@456>',self.channel.send.call_args.kwargs['content'])
+        self.message.id+=1
+        await notify_maximum_prices(self.store,self.message,report(60))
+        self.assertEqual(self.channel.send.await_count,2)
+        self.message.id+=1
+        await notify_maximum_prices(self.store,self.message,report(56))
+        self.message.id+=1
+        await notify_maximum_prices(self.store,self.message,report(60))
+        self.assertEqual(self.channel.send.await_count,4)
+
+    def test_mode_preserves_flags_and_survives_reopening(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'modes.sqlite'
+            store=Store(path)
+            store.set_price_subscription('1','123','Медь',True)
+            store.claim_price_alerts('1','100',['Медь'])
+            store.replace_price_subscriptions('1','123',['Медь'],{'Медь':'max'})
+            self.assertEqual(store.claim_price_alerts('1','101',['Медь']),[])
+            store.replace_price_subscriptions('1','123',['Медь'],{'Медь':'near'})
+            self.assertEqual(len(store.claim_price_alerts('1','102',[],['Медь'])),1)
+            store.close()
+            store=Store(path)
+            try:
+                self.assertEqual(store.price_subscription_modes('1','123'),{'Медь':'near'})
+                self.assertEqual(store.claim_price_alerts('1','103',[],['Медь']),[])
+            finally:store.close()
+
+    def test_legacy_migration_keeps_max_mode_and_notification_flag(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as folder:
+            path=Path(folder)/'old.sqlite'
+            connection=sqlite3.connect(path)
+            connection.executescript("CREATE TABLE price_subscriptions(guild_id TEXT,user_id TEXT,item TEXT,notified INTEGER DEFAULT 0,PRIMARY KEY(guild_id,user_id,item)); INSERT INTO price_subscriptions VALUES('1','123','Медь',1);")
+            connection.close()
+            store=Store(path)
+            try:
+                self.assertEqual(store.price_subscription_modes('1','123'),{'Медь':'max'})
+                self.assertEqual(store.claim_price_alerts('1','100',['Медь']),[])
+            finally:store.close()
+
+    def test_near_notices_are_preserved_by_cleanup(self):
+        from lafamily.modules.prices.service import is_current_price_notice
+        message=SimpleNamespace(author=SimpleNamespace(id=42),content='🏆 Медь — цена 95–100% от максимума!\nhttps://discord.com/channels/1/2/100')
+        self.assertTrue(is_current_price_notice(message,42,1,2,100))
+        self.assertFalse(is_current_price_notice(message,42,1,2,101))

@@ -19,6 +19,18 @@ class Store:
         self.db.row_factory = sqlite3.Row
         # Схема сохранена от JS-версии. ID Discord остаются строками без потери точности.
         self.db.executescript("""
+            CREATE TABLE IF NOT EXISTS release_deliveries (
+                guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, version TEXT NOT NULL,
+                state TEXT NOT NULL, message_id TEXT,
+                PRIMARY KEY(guild_id, channel_id, version)
+            );
+            CREATE TABLE IF NOT EXISTS release_settings (
+                guild_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS release_publications (
+                guild_id TEXT NOT NULL, version TEXT NOT NULL, state TEXT NOT NULL,
+                message_id TEXT, PRIMARY KEY(guild_id, version)
+            );
             PRAGMA foreign_keys = ON;
             PRAGMA journal_mode = WAL;
             PRAGMA busy_timeout = 5000;
@@ -81,6 +93,9 @@ class Store:
             INSERT OR IGNORE INTO settings_roles SELECT guild_id, 'manager', manager_role_id FROM settings;
         """)
         self.migrate_event_bonuses()
+        # Старые подписки сохраняют прежний режим и защиту от повторных тегов.
+        if 'threshold' not in {r['name'] for r in self.db.execute('PRAGMA table_info(price_subscriptions)')}:
+            self.db.execute("ALTER TABLE price_subscriptions ADD COLUMN threshold TEXT NOT NULL DEFAULT 'max'")
 
     def migrate_event_bonuses(self):
         # Добавляем только отсутствующие колонки; старые начисления остаются прежними.
@@ -376,23 +391,33 @@ class Store:
             "SELECT item FROM price_subscriptions WHERE guild_id=? AND user_id=? ORDER BY item",
             (guild_id, user_id))]
 
-    def replace_price_subscriptions(self, guild_id: str, user_id: str, items: list[str]):
+    def price_subscription_modes(self, guild_id, user_id):
+        return {r['item']: r['threshold'] for r in self.db.execute(
+            'SELECT item, threshold FROM price_subscriptions WHERE guild_id=? AND user_id=?', (guild_id, user_id))}
+
+    def replace_price_subscriptions(self, guild_id: str, user_id: str, items: list[str], modes=None):
         # Сохраняем весь выбор одной транзакцией. Для оставленных товаров не сбрасываем защиту от дублей.
         selected = set(items)
+        if modes is not None and (set(modes) != selected or any(v not in ('max', 'near') for v in modes.values())):
+            raise UserError('Неверный режим уведомлений.')
         with self.transaction():
             for old in self.price_subscriptions(guild_id, user_id):
                 if old not in selected:
                     self.db.execute("DELETE FROM price_subscriptions WHERE guild_id=? AND user_id=? AND item=?",
                                     (guild_id, user_id, old))
             for item in selected:
-                self.db.execute("INSERT OR IGNORE INTO price_subscriptions VALUES (?, ?, ?, 0)",
+                self.db.execute("INSERT OR IGNORE INTO price_subscriptions(guild_id, user_id, item, notified) VALUES (?, ?, ?, 0)",
                                 (guild_id, user_id, item))
+                if modes is not None:
+                    # Смена порога начинает новый цикл только для изменённого товара.
+                    self.db.execute("UPDATE price_subscriptions SET threshold=?, notified=0 WHERE guild_id=? AND user_id=? AND item=? AND threshold<>?",
+                                    (modes[item], guild_id, user_id, item, modes[item]))
         return self.price_subscriptions(guild_id, user_id)
 
     def set_price_subscription(self, guild_id: str, user_id: str, item: str, enabled: bool):
         # Повторное включение сохраняет флаг уведомления, чтобы не получить лишний тег.
         if enabled:
-            self.db.execute("INSERT OR IGNORE INTO price_subscriptions VALUES (?, ?, ?, 0)",
+            self.db.execute("INSERT OR IGNORE INTO price_subscriptions(guild_id, user_id, item, notified) VALUES (?, ?, ?, 0)",
                             (guild_id, user_id, item))
         else:
             self.db.execute("DELETE FROM price_subscriptions WHERE guild_id=? AND user_id=? AND item=?",
@@ -401,7 +426,7 @@ class Store:
             "SELECT item FROM price_subscriptions WHERE guild_id=? AND user_id=? ORDER BY item",
             (guild_id, user_id))]
 
-    def claim_price_alerts(self, guild_id: str, source_id: str, maximum_items: list[str]):
+    def claim_price_alerts(self, guild_id: str, source_id: str, maximum_items: list[str], near_items=None):
         # Флаг сохраняется ДО отправки: неоднозначный сетевой сбой не вызывает повторных тегов.
         # Старые отчёты не сбрасывают флаги текущих цен при ручной обработке.
         with self.transaction():
@@ -417,12 +442,54 @@ class Store:
             subscriptions = self.db.execute("SELECT * FROM price_subscriptions WHERE guild_id=?", (guild_id,)).fetchall()
             alerts = []
             for row in subscriptions:
-                at_maximum = row['item'] in maximum_items
+                at_maximum = row['item'] in ((near_items or []) if row['threshold'] == 'near' else maximum_items)
                 if at_maximum and not row['notified']:
-                    alerts.append({'user_id': row['user_id'], 'item': row['item']})
+                    alerts.append({'user_id': row['user_id'], 'item': row['item'], 'threshold': row['threshold']})
                 self.db.execute("UPDATE price_subscriptions SET notified=? WHERE guild_id=? AND user_id=? AND item=?",
                                 (int(at_maximum), guild_id, row['user_id'], row['item']))
             return alerts
+
+    def release_channel(self, guild_id):
+        row = self.db.execute('SELECT * FROM release_settings WHERE guild_id=?', (guild_id,)).fetchone()
+        return dict(row) if row else None
+
+    def configure_release_channel(self, guild_id, actor_id, channel_id):
+        with self.transaction():
+            self.db.execute('INSERT INTO release_settings VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id', (guild_id, channel_id))
+            self.audit(guild_id, actor_id, 'release.channel.updated', {'channel_id': channel_id})
+
+    def release_publication(self, guild_id, version):
+        row = self.db.execute('SELECT * FROM release_publications WHERE guild_id=? AND version=?', (guild_id, version)).fetchone()
+        return dict(row) if row else None
+
+    def claim_release(self, guild_id, version):
+        with self.transaction():
+            result = self.db.execute("INSERT OR IGNORE INTO release_publications(guild_id,version,state) VALUES (?,?,'pending')", (guild_id, version))
+            return bool(result.rowcount)
+
+    def save_release(self, guild_id, version, message_id):
+        self.db.execute("UPDATE release_publications SET state='published', message_id=? WHERE guild_id=? AND version=?", (message_id, guild_id, version))
+
+    def uncertain_release(self, guild_id, version):
+        self.db.execute("UPDATE release_publications SET state='uncertain' WHERE guild_id=? AND version=?", (guild_id, version))
+
+    def claim_release_delivery(self, guild_id, channel_id, version):
+        with self.transaction():
+            # Ранее опубликованный, но теперь отсутствующий в истории пост можно восстановить.
+            result = self.db.execute("""INSERT INTO release_deliveries(guild_id,channel_id,version,state)
+                VALUES (?,?,?,'pending') ON CONFLICT(guild_id,channel_id,version)
+                DO UPDATE SET state='pending', message_id=NULL WHERE release_deliveries.state='published'""",
+                (guild_id, channel_id, version))
+            return bool(result.rowcount)
+
+    def save_release_delivery(self, guild_id, channel_id, version, message_id):
+        self.db.execute("""INSERT INTO release_deliveries VALUES (?,?,?,'published',?)
+            ON CONFLICT(guild_id,channel_id,version) DO UPDATE SET state='published', message_id=excluded.message_id""",
+            (guild_id, channel_id, version, message_id))
+
+    def uncertain_release_delivery(self, guild_id, channel_id, version):
+        self.db.execute("UPDATE release_deliveries SET state='uncertain' WHERE guild_id=? AND channel_id=? AND version=?",
+                        (guild_id, channel_id, version))
 
     def close(self):
         self.db.close()

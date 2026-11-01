@@ -23,7 +23,7 @@ def is_current_price_notice(message, bot_id, guild_id, channel_id, source_id):
     content = getattr(message, 'content', '') or ''
     link = f'https://discord.com/channels/{guild_id}/{channel_id}/{source_id}'
     return (bot_id is not None and getattr(author, 'id', None) == bot_id
-            and '— достигнут справочный максимум!' in content
+            and ('— достигнут справочный максимум!' in content or '— цена 95–100% от максимума!' in content)
             and content.splitlines()[-1:] == [link])
 
 

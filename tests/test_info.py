@@ -43,7 +43,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         text = "\n".join(field.value for field in embed.fields)
         commands = [command for command in self.bot.tree.walk_commands(guild=discord.Object(id=GUILD))
                     if isinstance(command, app_commands.Command)]
-        self.assertEqual(len(commands), 23)
+        self.assertEqual(len(commands), 25)
         for command in commands:
             self.assertIn(f"/{command.qualified_name}", text)
             self.assertIn(command.description, text)
@@ -144,7 +144,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_is_short_private_and_has_first_steps(self):
         interaction = self.interaction()
-        command = self.bot.tree.get_command("старт", guild=discord.Object(id=GUILD))
+        command = self.bot.tree.get_command("старт", guild=discord.Object(id=GUILD)).get_command("участник")
         self.assertEqual(command.extras['access'], 'all')
         await command.callback(interaction)
         payload = interaction.response.send_message.call_args.kwargs
@@ -156,3 +156,30 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         text = '\n'.join(field.value for field in embed.fields)
         for name in ('/статистика моя', '/коровник-сбор', '/скупщик-уведомление', 'Подтвердить', '/инфо фарм'):
             self.assertIn(name, text)
+
+    async def test_admin_start_is_private_readonly_and_covers_setup_within_discord_limits(self):
+        command=self.bot.tree.get_command('старт',guild=discord.Object(id=GUILD)).get_command('администратор')
+        self.assertEqual(command.extras['access'],'admin')
+        before=self.store.db.total_changes
+        for roles in ((),(ORGANIZER,),(MANAGER,)):
+            interaction=self.interaction(roles)
+            from lafamily.errors import UserError
+            with self.assertRaises(UserError):await command.callback(interaction)
+            interaction.edit_original_response.assert_not_awaited()
+        interaction=self.interaction((),True)
+        await command.callback(interaction)
+        self.assertTrue(interaction.response.defer.call_args.kwargs['ephemeral'])
+        payload=interaction.edit_original_response.call_args.kwargs
+        self.assertEqual(payload['allowed_mentions'].to_dict(),{'parse':[]})
+        embeds=payload['embeds']
+        self.assertEqual(len(embeds),2)
+        self.assertLessEqual(sum(len(e) for e in embeds),6000)
+        text='\n'.join(e.description or '' for e in embeds)+'\n'+'\n'.join(field.value for e in embeds for field in e.fields)
+        for name in ('/настройки','Сохранить','/мп вид-добавить','/коровник-настройка','/скупщик-настройка',
+                     '/скупщик-уведомление','/модерация-настройки','/проверка-ника','/обновления-канал',
+                     '/мп отчёт','/мп отменить','/мп выплата-премии','main.py','база сохранена'):
+            self.assertIn(name,text)
+        for embed in embeds:
+            self.assertLessEqual(len(embed.fields),25)
+            self.assertTrue(all(len(field.value)<=1024 for field in embed.fields))
+        self.assertEqual(before,self.store.db.total_changes)
