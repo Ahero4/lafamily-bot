@@ -32,14 +32,26 @@ class PriceSubscriptionView(discord.ui.View):
             discord.SelectOption(label=item, value=item) for item in LIMITS]
 
     def prompt(self):
-        selected = ', '.join(name for name in LIMITS if name in self.selected) or 'ничего'
-        return ('**Уведомления о ценах**\n'
-                'Отметьте несколько товаров в списке и нажмите «Подтвердить». '
-                'Чтобы отписаться от товара, снимите отметку. Пустой выбор отключает все уведомления.\n'
-                f'Выбрано: {selected}.\n'
-                'Выберите область «Все выбранные товары» или отдельный товар, затем режим «95 - 100» / «Макс. цена».\n'
-                + '\n'.join(f'{item}: {MODE_LABELS[self.modes.get(item, self.default_mode)]}' for item in sorted(self.selected)) + '\n' +
-                'До подтверждения подписки не меняются. Меню действует 10 минут.')
+        scope = 'все выбранные товары' if self.scope_item == '*' else self.scope_item
+        settings = '\n'.join(f'{item}: {MODE_LABELS[self.modes.get(item, self.default_mode)]}'
+                             for item in LIMITS if item in self.selected) or 'Товары пока не выбраны.'
+        return (
+            '**Уведомления о ценах — как настроить**\n'
+            '**1 · Товары.** В первом поле отметьте, по каким товарам получать теги.\n'
+            '**2 · Для кого менять режим.** Во втором поле выберите «Все выбранные товары» '
+            'или один товар из вашего списка. **Это поле само режим не меняет** — оно выбирает, к чему применить шаг 3.\n'
+            '**3 · Режим цены.** В третьем поле выберите «95 - 100» или «Макс. цена». '
+            'Режим применится к выбранной на шаге 2 области.\n'
+            '**4 · Сохранить.** Проверьте список ниже и нажмите «Подтвердить».\n\n'
+            '**Пример:** всем товарам «95 - 100», но меди — максимум: '
+            'во втором поле выберите «Медь», в третьем — «Макс. цена».\n'
+            '**95 - 100** — обычная цена от 95% до 100% максимума включительно; '
+            '**Макс. цена** — обычная цена достигла максимума или выше.\n\n'
+            f'**Сейчас меняете режим для:** {scope}.\n'
+            f'**Ваш выбор перед сохранением:**\n{settings}\n\n'
+            'Чтобы отписаться, снимите товар в первом поле. Пустой список отключает все уведомления. '
+            'До «Подтвердить» изменения не сохраняются; «Отмена» их отменяет. Меню действует 10 минут.'
+        )
 
     def check_owner(self, interaction):
         if interaction.user.id != self.owner_id or interaction.guild_id != self.guild_id:
@@ -74,7 +86,7 @@ class PriceSubscriptionView(discord.ui.View):
             await interaction.response.edit_message(content=self.prompt(), view=self,
                                                     allowed_mentions=discord.AllowedMentions.none())
 
-    @discord.ui.select(placeholder='Выберите товары для отслеживания', min_values=0, max_values=1, row=0)
+    @discord.ui.select(placeholder='1 · Выберите товары для уведомлений', min_values=0, max_values=1, row=0)
     async def selector(self, interaction, select):
         await self.choose(interaction, select.values)
 
@@ -126,15 +138,17 @@ class PriceSubscriptionView(discord.ui.View):
             except discord.HTTPException:
                 pass  # Личное сообщение могло быть удалено; подписки всё равно не меняются.
 
-    @discord.ui.select(placeholder='Настроить все товары или один', row=1)
+    @discord.ui.select(placeholder='2 · Для кого менять режим: все товары или один', row=1)
     async def scope_selector(self, interaction, select):
         async with self.lock:
             self.check_owner(interaction)
             self.scope_item = select.values[0]
-            self.mode_selector.placeholder = 'Режим: ' + ('все выбранные товары' if self.scope_item == '*' else self.scope_item)
+            for option in self.scope_selector.options:
+                option.default = option.value == self.scope_item
+            self.mode_selector.placeholder = '3 · Режим для: ' + ('все выбранные товары' if self.scope_item == '*' else self.scope_item)
             await interaction.response.edit_message(content=self.prompt(), view=self)
 
-    @discord.ui.select(placeholder='Выберите режим уведомлений', row=2,
+    @discord.ui.select(placeholder='3 · Выберите режим цены для указанной области', row=2,
                        options=[discord.SelectOption(label='95 - 100', value='near'),
                                 discord.SelectOption(label='Макс. цена', value='max')])
     async def mode_selector(self, interaction, select):
