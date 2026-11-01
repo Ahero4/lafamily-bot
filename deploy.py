@@ -18,7 +18,8 @@ async def deploy():
     async with DatabaseWorker(":memory:") as store:
         async with FamilyBot(config, store) as bot:
             await bot.login(config.token)
-            commands = await bot.tree.sync(guild=discord.Object(id=config.guild_id))
+            # login уже выполнил регистрацию в setup_hook: второй запрос не нужен.
+            commands = bot.tree.get_commands(guild=discord.Object(id=config.guild_id))
             print(f"Команды LaFamily зарегистрированы: {len(commands)}.")
 
 

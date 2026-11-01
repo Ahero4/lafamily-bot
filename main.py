@@ -1,4 +1,4 @@
-"""Запуск: python main.py. Команды публикуются отдельно через deploy.py."""
+"""Запуск: python main.py. Команды регистрируются автоматически перед подключением Discord."""
 
 import asyncio
 import logging

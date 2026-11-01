@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from lafamily.config import Config
+from lafamily.errors import UserError
 from lafamily.database import Store
 from lafamily.modules.events.commands import install_commands
 from lafamily.modules.events.service import EventService
@@ -59,6 +60,14 @@ class FamilyBot(discord.Client):
         # Постоянные кнопки продолжают работать после перезапуска.
         self.add_view(EntryView(self.onboarding))
         self.add_view(ReviewView(self.onboarding))
+        # setup_hook вызывается после авторизации, до Gateway и не повторяется при reconnect.
+        # При сбое регистрации прекращаем запуск, чтобы не обслуживать устаревшую схему.
+        try:
+            commands = await self.tree.sync(guild=discord.Object(id=self.config.guild_id))
+        except Exception as error:
+            raise UserError("Не удалось зарегистрировать команды. Проверьте доступ к Discord, "
+                            "DISCORD_GUILD_ID и права приложения; затем перезапустите бота.") from error
+        logger.info("Команды LaFamily зарегистрированы на сервере %s: %s", self.config.guild_id, len(commands))
 
     async def on_message(self, message):
         await self.prices.handle(message)

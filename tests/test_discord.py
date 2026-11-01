@@ -3,7 +3,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
@@ -120,6 +120,30 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             await first
         self.assertEqual(self.store.statistics(GUILD, week_range(), MEMBER)[0]["events"], 1)
+
+    async def test_startup_registers_only_configured_guild_not_on_ready(self):
+        bot = FamilyBot(Config("token", 123, int(GUILD), Path(":memory:")), self.store)
+        try:
+            bot.tree.sync = AsyncMock(return_value=[])
+            with patch.object(bot, "add_view") as add_view:
+                await bot.setup_hook()
+                self.assertEqual(add_view.call_count, 2)
+            bot.tree.sync.assert_awaited_once_with(guild=discord.Object(id=int(GUILD)))
+            await bot.on_ready()
+            await bot.on_ready()
+            self.assertEqual(bot.tree.sync.await_count, 1)
+        finally:
+            await bot.close()
+
+    async def test_startup_registration_failure_is_not_ignored(self):
+        bot = FamilyBot(Config("token", 123, int(GUILD), Path(":memory:")), self.store)
+        try:
+            bot.tree.sync = AsyncMock(side_effect=RuntimeError("network"))
+            with patch.object(bot, "add_view"), self.assertRaisesRegex(UserError, "зарегистрировать команды"):
+                await bot.setup_hook()
+            bot.tree.sync.assert_awaited_once()
+        finally:
+            await bot.close()
 
     async def test_commands_build_with_russian_names_and_options(self):
         bot = FamilyBot(Config("fake", 666666666666666666, int(GUILD), Path(":memory:")), self.store)
