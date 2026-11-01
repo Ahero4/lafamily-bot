@@ -1,0 +1,245 @@
+"""Сообщения отчётов и временная форма выбора состава мероприятия."""
+
+import asyncio
+import time
+from typing import TYPE_CHECKING
+
+import discord
+from discord.utils import escape_markdown
+
+from lafamily.errors import UserError
+from lafamily.modules.events.models import Draft
+from lafamily.modules.events.time import display_date
+from lafamily.permissions import require_access_async
+from lafamily.responses import send_error
+
+if TYPE_CHECKING:
+    from lafamily.modules.events.service import EventService
+
+
+def add_members(embed: discord.Embed, members: list[str]):
+    # Поле Discord вмещает 1024 символа: разбиваем состав по 25 упоминаний.
+    for offset in range(0, len(members), 25):
+        embed.add_field(
+            name=f"Участники {offset + 1}–{min(offset + 25, len(members))} из {len(members)}",
+            value=" ".join(f"<@{member}>" for member in members[offset:offset + 25]), inline=False,
+        )
+
+
+def report_embed(report: dict) -> discord.Embed:
+    cancelled = bool(report["cancelled_at"])
+    embed = discord.Embed(
+        title=f"МП #{report['id']} — {'отменено' if cancelled else 'учтено'}",
+        description=escape_markdown(report["type_name"]), colour=0xD64545 if cancelled else 0x41A878,
+    )
+    embed.add_field(name="Дата (Москва)", value=display_date(report["occurred_at"]))
+    embed.add_field(name="Очки каждому", value=str(report["points"]))
+    embed.add_field(name="Организатор", value=f"<@{report['organizer_id']}>")
+    if report.get("outcome"):
+        embed.add_field(name="Итог", value=("Победа" if report["outcome"] == "win" else "Без победы") + f" • бонус каждому +{report['win_bonus']}")
+    if report.get("mvp_id"):
+        embed.add_field(name="MVP", value=f"<@{report['mvp_id']}> • дополнительно +{report['mvp_bonus']} очк. • всего {report['points'] + report['mvp_bonus']}")
+    add_members(embed, report["members"])
+    if report["note"]:
+        embed.add_field(name="Примечание", value=escape_markdown(report["note"]), inline=False)
+    if cancelled:
+        embed.add_field(name="Причина отмены", value=escape_markdown(report["cancel_reason"]), inline=False)
+    return embed.set_footer(text="LaFamily • учёт мероприятий")
+
+
+class ReportView(discord.ui.View):
+    """Один черновик живёт 14 минут, только его организатор может менять состав."""
+
+    def __init__(self, service: "EventService", draft: Draft):
+        # Запас до истечения 15-минутного токена Discord позволяет отключить кнопки вовремя.
+        super().__init__(timeout=840)
+        self.service = service
+        self.draft = draft
+        self.expires_at = time.monotonic() + 840
+        self.lock = asyncio.Lock()
+        self.finished = False
+        self.needs_refresh = False
+        self.pending = []  # Совместимость с проверками старого интерфейса; самозапись сразу идёт в состав.
+        self.original = None
+        self.expiry_handle = None
+        # Свой ID у каждого компонента позволяет отличить разные черновики.
+        for item in self.children:
+            item.custom_id = f"mp:{item.custom_id}:{draft.request_id}"
+
+    async def validate(self, interaction: discord.Interaction):
+        if self.finished or time.monotonic() >= self.expires_at:
+            raise UserError("Черновик истёк или уже обработан. Создайте новый через /мп отчёт.")
+        if str(interaction.guild_id) != self.draft.guild_id or str(interaction.user.id) != self.draft.organizer_id:
+            raise UserError("Это черновик другого организатора.")
+        await require_access_async(interaction, self.service.store, "organizer")
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        try:
+            # Проверка роли выполняется после defer в dispatch, до операций с данными.
+            if self.finished or time.monotonic() >= self.expires_at:
+                raise UserError("Черновик истёк или уже обработан. Создайте новый через /мп отчёт.")
+            return True
+        except UserError as error:
+            await send_error(interaction, error)
+            return False
+
+    def payload(self, members=None) -> dict:
+        members = self.draft.members if members is None else members
+        self.confirm.disabled = self.finished or not members
+        embed = discord.Embed(colour=0x7289DA)
+        add_members(embed, members)
+        pending = [member for member in self.pending if member not in members]
+        for offset in range(0, len(pending), 25):
+            embed.add_field(name="Заявки — ожидают проверки организатором",
+                value=" ".join(f"<@{member}>" for member in pending[offset:offset + 25]), inline=False)
+        if self.draft.voice_channel_id:
+            embed.add_field(name="Голосовой канал МП", value=f"<#{self.draft.voice_channel_id}>", inline=False)
+        if self.draft.outcome:
+            embed.add_field(name="Итог", value=("Победа" if self.draft.outcome == "win" else "Без победы") + f" • +{self.draft.win_bonus} каждому")
+        if self.draft.mvp_id:
+            embed.add_field(name="MVP", value=f"<@{self.draft.mvp_id}> • ещё +{self.draft.mvp_bonus} очк. (должен быть в составе)")
+        note = f"Примечание: {escape_markdown(self.draft.note)}\n" if self.draft.note else ""
+        content = (
+            f"**Подтверждение отчёта**\n{escape_markdown(self.draft.type_name)} • {self.draft.points + self.draft.win_bonus} очк. каждому\n"
+            f"{display_date(self.draft.occurred_at)} (Москва)\n{note}"
+            f"Подтверждено: **{len(members)}** · Ожидают проверки: **{len(pending)}** · Всего: **{len(members) + len(pending)}**.\n"
+            "Нажмите «Участвовать» — вы сразу попадёте в состав МП.\n"
+            "Организатор может добавить людей через меню. Итоговое подтверждение начислит баллы всему составу. До 100 участников.\n"
+            "Черновик действует 14 минут. Подтверждение сохранит отчёт и начислит очки."
+        )
+        return {"content": content, "embeds": [embed] if members or self.pending or self.draft.voice_channel_id or self.draft.outcome or self.draft.mvp_id else [], "view": self,
+                "allowed_mentions": discord.AllowedMentions.none()}
+
+    def finish(self):
+        self.finished = True
+        for item in self.children:
+            item.disabled = True
+        if self.expiry_handle:
+            self.expiry_handle.cancel()
+        self.stop()
+        key = (self.draft.guild_id, self.draft.organizer_id)
+        if self.service.views.get(key) is self:
+            self.service.views.pop(key)
+
+    def bind(self, interaction: discord.Interaction):
+        self.original = interaction
+        if self.expiry_handle is None:
+            self.expiry_handle = asyncio.get_running_loop().call_later(
+                max(0, self.expires_at - time.monotonic()), lambda: asyncio.create_task(self.on_timeout()))
+
+    async def retire(self, reason: str):
+        self.finish()
+        if self.original:
+            try:
+                await self.original.edit_original_response(content=reason, embeds=[], view=None)
+            except Exception as error:
+                from lafamily.diagnostics import log_error
+                log_error("Не удалось отключить старый черновик", error)
+
+    async def on_timeout(self):
+        async with self.lock:
+            if not self.finished:
+                await self.retire("Срок черновика истёк. Создайте новый через /мп отчёт.")
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item):
+        await send_error(interaction, error)
+
+    async def dispatch(self, action: str, interaction: discord.Interaction, selected=None):
+        # Блокировка ставится до первого сетевого запроса: параллельный клик не создаёт дубль.
+        if self.lock.locked():
+            raise UserError("Отчёт обрабатывается. Дождитесь результата.")
+        async with self.lock:
+            await interaction.response.defer()
+            await self.validate(interaction)
+            self.original = interaction
+            if action == "discard":
+                self.finish()
+                await interaction.edit_original_response(content="Черновик отменён. Очки не начислялись.", embeds=[], view=None)
+                return
+            if action == "reject_pending":
+                # Отклонение — отдельное явное действие организатора, а не побочный эффект сохранения.
+                await interaction.edit_original_response(content="Оставшиеся заявки отклонены. Проверьте подтверждённый состав и нажмите «Подтвердить отчёт».", embeds=[], view=self)
+                self.pending = []
+                await interaction.edit_original_response(**self.payload())
+                return
+            if action == "clear":
+                members = []
+            elif action == "add":
+                if any(member.bot or not isinstance(member, discord.Member) for member in selected):
+                    raise UserError("Выбирайте участников этого сервера; ботов включать нельзя.")
+                members = list(dict.fromkeys([*self.draft.members, *(str(member.id) for member in selected)]))
+                if len(members) > 100:
+                    raise UserError("В первой версии можно указать не больше 100 участников.")
+            elif action == "confirm":
+                if self.pending:
+                    raise UserError(f"Ожидают проверки ещё {len(self.pending)} заявок. Подтвердите присутствующих через меню или явно отклоните оставшиеся заявки. Отчёт не сохранён.")
+                if self.needs_refresh:
+                    # После неоднозначного сетевого сбоя сначала показываем сохранённый состав.
+                    payload = self.payload()
+                    payload["content"] = "Состав заново показан после ошибки связи. Проверьте его и подтвердите ещё раз.\n\n" + payload["content"]
+                    await interaction.edit_original_response(**payload)
+                    self.needs_refresh = False
+                    return
+                content = await self.service.confirm(interaction, self)
+                await interaction.edit_original_response(content=content, embeds=[], view=None)
+                return
+            try:
+                await interaction.edit_original_response(**self.payload(members))
+            except BaseException:
+                self.needs_refresh = True
+                self.payload()  # Восстанавливаем локальное состояние кнопки подтверждения.
+                raise
+            # Состав меняется только после успешного показа пользователю.
+            self.draft.members = members
+            self.pending = [member for member in self.pending if member not in members]
+            self.needs_refresh = False
+
+    @discord.ui.button(label="Участвовать", custom_id="join", style=discord.ButtonStyle.success, row=2)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Самозапись сразу включает участника в начисляемый состав; общий lock защищает от дублей.
+        async with self.lock:
+            if self.finished or time.monotonic() >= self.expires_at:
+                raise UserError("Запись закрыта. Попросите организатора создать новый отчёт.")
+            if str(interaction.guild_id) != self.draft.guild_id or interaction.user.bot:
+                raise UserError("Записаться может участник этого сервера.")
+            if self.draft.voice_channel_id:
+                voice = getattr(interaction.user, 'voice', None)
+                channel = getattr(voice, 'channel', None)
+                if channel is None or str(channel.id) != self.draft.voice_channel_id:
+                    # Публично отмечаем только нажавшего, без упоминаний ролей и everyone.
+                    await interaction.response.send_message(
+                        f'<@{interaction.user.id}>, МП проводится в <#{self.draft.voice_channel_id}>. '
+                        f'Зайдите в канал и нажмите «Участвовать» снова.\n'
+                        f'https://discord.com/channels/{self.draft.guild_id}/{self.draft.voice_channel_id}',
+                        allowed_mentions=discord.AllowedMentions(everyone=False, roles=False, users=[interaction.user]))
+                    return
+            member_id = str(interaction.user.id)
+            if member_id in self.pending or member_id in self.draft.members:
+                await interaction.response.send_message("Вы уже участвуете в этом МП.", ephemeral=True)
+                return
+            if len(self.pending) + len(self.draft.members) >= 100:
+                raise UserError("В этом отчёте уже записано 100 человек.")
+            self.draft.members.append(member_id)
+            try:
+                await interaction.response.edit_message(**self.payload())
+            except BaseException:
+                self.draft.members.remove(member_id)
+                raise
+
+    @discord.ui.select(cls=discord.ui.UserSelect, custom_id="add", placeholder="Организатор: добавить участников", min_values=1, max_values=25, row=0)
+    async def select_members(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        await self.dispatch("add", interaction, select.values)
+
+    @discord.ui.button(label="Подтвердить отчёт", custom_id="confirm", style=discord.ButtonStyle.success, disabled=True, row=1)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.dispatch("confirm", interaction)
+
+    @discord.ui.button(label="Очистить состав", custom_id="clear", style=discord.ButtonStyle.secondary, row=1)
+    async def clear(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.dispatch("clear", interaction)
+
+    @discord.ui.button(label="Отменить черновик", custom_id="discard", style=discord.ButtonStyle.danger, row=1)
+    async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.dispatch("discard", interaction)
+
+

@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+data/
+backups/
+*.log

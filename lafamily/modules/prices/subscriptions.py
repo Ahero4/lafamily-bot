@@ -1,0 +1,117 @@
+"""Личное меню подписок: выбор товаров сохраняется только по кнопке подтверждения."""
+import asyncio
+import time
+
+import discord
+
+from lafamily.async_database import database_call
+from lafamily.errors import UserError
+from lafamily.responses import send_error
+from .parser import LIMITS
+
+
+class PriceSubscriptionView(discord.ui.View):
+    def __init__(self, service, original, items):
+        super().__init__(timeout=600)
+        self.service, self.original = service, original
+        self.owner_id, self.guild_id = original.user.id, original.guild_id
+        self.selected = set(items).intersection(LIMITS)
+        self.finished = False
+        self.lock = asyncio.Lock()
+        self.expires_at = time.monotonic() + 600
+        # Один список Discord вмещает до 25 вариантов; сейчас товаров 20.
+        self.selector.options = [discord.SelectOption(label=name, value=name, default=name in self.selected)
+                                 for name in LIMITS]
+        self.selector.max_values = len(LIMITS)
+
+    def prompt(self):
+        selected = ', '.join(name for name in LIMITS if name in self.selected) or 'ничего'
+        return ('**Уведомления о максимальных ценах**\n'
+                'Отметьте несколько товаров в списке и нажмите «Подтвердить». '
+                'Чтобы отписаться от товара, снимите отметку. Пустой выбор отключает все уведомления.\n'
+                f'Выбрано: {selected}.\n'
+                'До подтверждения подписки не меняются. Меню действует 10 минут.')
+
+    def check_owner(self, interaction):
+        if interaction.user.id != self.owner_id or interaction.guild_id != self.guild_id:
+            raise UserError('Это меню принадлежит другому участнику. Откройте /скупщик-уведомление для себя.')
+        if self.finished or time.monotonic() >= self.expires_at:
+            raise UserError('Меню закрыто или устарело. Откройте /скупщик-уведомление заново.')
+
+    async def interaction_check(self, interaction):
+        try:
+            self.check_owner(interaction)
+        except UserError as error:
+            await send_error(interaction, error)
+            return False
+        return True
+
+    async def on_error(self, interaction, error, item):
+        await send_error(interaction, error)
+
+    def finish(self):
+        self.finished = True
+        self.stop()
+
+    async def choose(self, interaction, values):
+        async with self.lock:
+            self.check_owner(interaction)
+            if not set(values).issubset(LIMITS):
+                raise UserError('Выберите товары из списка.')
+            self.selected = set(values)
+            for option in self.selector.options:
+                option.default = option.value in self.selected
+            await interaction.response.edit_message(content=self.prompt(), view=self,
+                                                    allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.select(placeholder='Выберите товары для отслеживания', min_values=0, max_values=1)
+    async def selector(self, interaction, select):
+        await self.choose(interaction, select.values)
+
+    @discord.ui.button(label='Подтвердить', style=discord.ButtonStyle.success)
+    async def confirm(self, interaction, button):
+        await self.save(interaction)
+
+    async def save(self, interaction):
+        async with self.lock:
+            self.check_owner(interaction)
+            await interaction.response.defer()
+            settings = None
+            if self.selected:
+                # Канал и права могут измениться после открытия меню: перепроверяем перед записью.
+                self.service.require_enabled()
+                settings = await database_call(self.service.store, 'price_settings', str(self.guild_id))
+                if not settings:
+                    raise UserError('Руководству нужно сначала выбрать канал через /скупщик-настройка.')
+                channel = await interaction.guild.fetch_channel(int(settings['channel_id']))
+                self.service.require_channel(channel, interaction.guild)
+                if not channel.permissions_for(interaction.user).view_channel:
+                    raise UserError('У вас нет доступа к каналу цен. Обратитесь к руководству.')
+            items = await database_call(self.service.store, 'replace_price_subscriptions',
+                                        str(self.guild_id), str(self.owner_id), list(self.selected))
+            # После записи повторное нажатие не должно ещё раз менять подписки.
+            self.finish()
+            text = ('Подписки сохранены: ' + ', '.join(items) +
+                    f'.\nТег придёт в <#{settings["channel_id"]}>, когда обычная цена достигнет справочного максимума. '
+                    'Повторный тег — после снижения цены и нового достижения максимума.'
+                    if items else 'Все уведомления о ценах отключены.')
+            await interaction.edit_original_response(content=text, view=None,
+                                                     allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label='Отмена', style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        async with self.lock:
+            self.check_owner(interaction)
+            self.finish()
+            await interaction.response.edit_message(content='Изменения отменены. Подписки сохранены без изменений.', view=None)
+
+    async def on_timeout(self):
+        async with self.lock:
+            if self.finished:
+                return
+            self.finish()
+            try:
+                await self.original.edit_original_response(
+                    content='Время выбора истекло. Подписки не изменились. Откройте /скупщик-уведомление заново.', view=None)
+            except discord.HTTPException:
+                pass  # Личное сообщение могло быть удалено; подписки всё равно не меняются.
