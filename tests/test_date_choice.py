@@ -44,6 +44,7 @@ class DateChoiceTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(
             guild_id=int(guild), guild=SimpleNamespace(), user=SimpleNamespace(id=int(actor)),
             permissions=discord.Permissions(administrator=True),
+            channel=SimpleNamespace(get_partial_message=lambda message_id: SimpleNamespace(edit=AsyncMock())),
             response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock(),
         )
         # Подсказка могла быть открыта до московской полуночи, а команда отправлена после неё.

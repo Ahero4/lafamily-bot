@@ -71,7 +71,8 @@ class EventCommands(app_commands.Group):
                 raise UserError("В голосовом канале больше 100 участников. Выберите состав вручную.")
         view = await self.service.new_view_async(draft)
         view.bind(interaction)
-        await interaction.edit_original_response(**view.payload())
+        message = await interaction.edit_original_response(**view.payload())
+        view.message = interaction.channel.get_partial_message(message.id)
 
     @create_report.autocomplete("kind")
     async def report_autocomplete(self, interaction: discord.Interaction, current: str):

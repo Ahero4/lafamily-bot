@@ -18,14 +18,16 @@ class NotificationBonusTests(unittest.IsolatedAsyncioTestCase):
         await notify_maximum_prices(store,message,report)
         self.assertEqual(message.channel.send.await_count,2)
         for call in message.channel.send.call_args_list:
-            self.assertIn('Медь: $60 ($72 с +20% за 3 часа)',call.kwargs['content'])
+            self.assertIn('Медь: $60 ($72)',call.kwargs['content'])
+            self.assertNotIn('+20%',call.kwargs['content'])
+            self.assertIn('Скупщик: **№',call.kwargs['content'])
         message.id=101
         await notify_maximum_prices(store,message,report)
         self.assertEqual(message.channel.send.await_count,2)
 
     def test_source_rounding_not_recalculated(self):
         report=parse_prices(EXAMPLE.replace('- Алмаз: $2903 ($3483)','- Алмаз: $3997 ($4796)'))
-        self.assertEqual(bonus_price_text(report,'Алмаз',3997),' ($4796 с +20% за 3 часа)')
+        self.assertEqual(bonus_price_text(report,'Алмаз',3997),' ($4796)')
 
     def test_tied_buyers_keep_their_own_bonuses(self):
         report=parse_prices(EXAMPLE.replace('- Медь: $36 ($43)','- Медь: $60 ($72)').replace('- Медь: $23 ($27)','- Медь: $60 ($71)'))
@@ -35,4 +37,4 @@ class NotificationBonusTests(unittest.IsolatedAsyncioTestCase):
 
     def test_missing_bonus_is_explicitly_calculated(self):
         report=parse_prices(EXAMPLE)
-        self.assertEqual(bonus_price_text(report,'Капуста',720),' (≈$864 (расчёт) с +20% за 3 часа)')
+        self.assertEqual(bonus_price_text(report,'Капуста',720),' (≈$864 (расчёт))')

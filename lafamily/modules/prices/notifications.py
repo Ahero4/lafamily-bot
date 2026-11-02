@@ -12,15 +12,15 @@ def bonus_price_text(report, item, price):
     best_rows = [(buyer, row) for buyer, row in rows if row.base == price]
     values = {row.bonus for _, row in best_rows}
     if len(values) == 1 and None not in values:
-        return f" (${next(iter(values))} с +20% за 3 часа)"
+        return f" (${next(iter(values))})"
     # Отчёты продуктов и некоторые источники не содержат бонусной цены.
     # Расчёт явно отмечаем, чтобы не выдавать его за цену из игрового отчёта.
     def describe(row):
         return f"${row.bonus}" if row.bonus is not None else f"≈${row.base * 120 // 100} (расчёт)"
     if len(values) == 1:
-        return f" ({describe(best_rows[0][1])} с +20% за 3 часа)"
+        return f" ({describe(best_rows[0][1])})"
     prices = ', '.join(f"№{buyer}: {describe(row)}" for buyer, row in best_rows)
-    return f" ({prices}; +20% за 3 часа)"
+    return f" ({prices})"
 
 
 async def notify_maximum_prices(store, message, report):
@@ -51,7 +51,7 @@ async def notify_maximum_prices(store, message, report):
             mentions = ' '.join(f'<@{user}>' for user in batch)
             await message.channel.send(
                 content=f'{mentions}\n🏆 **{item}: ${price}{bonus}** — {reason} '
-                        f'Скупщик: {places}.\n'
+                        f'Скупщик: **{places}**.\n'
                         f'https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}',
                 allowed_mentions=discord.AllowedMentions(
                     everyone=False, roles=False, users=[discord.Object(id=int(user)) for user in batch], replied_user=False))

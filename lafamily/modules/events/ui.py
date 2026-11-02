@@ -48,19 +48,21 @@ def report_embed(report: dict) -> discord.Embed:
 
 
 class ReportView(discord.ui.View):
-    """Черновик живёт 14 минут; им управляют автор и руководство сервера."""
+    """Черновик живёт 1 час; им управляют автор и руководство сервера."""
 
     def __init__(self, service: "EventService", draft: Draft):
-        # Запас до истечения 15-минутного токена Discord позволяет отключить кнопки вовремя.
-        super().__init__(timeout=840)
+        # Каждый клик даёт свежий interaction; таймер завершения редактирует
+        # обычное сообщение через bot API, без зависимости от 15-минутного токена.
+        super().__init__(timeout=3600)
         self.service = service
         self.draft = draft
-        self.expires_at = time.monotonic() + 840
+        self.expires_at = time.monotonic() + 3600
         self.lock = asyncio.Lock()
         self.finished = False
         self.needs_refresh = False
         self.pending = []  # Совместимость с проверками старого интерфейса; самозапись сразу идёт в состав.
         self.original = None
+        self.message = None
         self.expiry_handle = None
         if not draft.win_enabled:
             self.remove_item(self.select_outcome)
@@ -91,6 +93,8 @@ class ReportView(discord.ui.View):
             return False
 
     def payload(self, members=None) -> dict:
+        for option in self.select_outcome.options:
+            option.default = option.value == self.draft.outcome
         members = self.draft.members if members is None else members
         self.confirm.disabled = (self.finished or not members
                                  or (self.draft.win_enabled and not self.draft.outcome))
@@ -117,7 +121,7 @@ class ReportView(discord.ui.View):
             f"Подтверждено: **{len(members)}** · Ожидают проверки: **{len(pending)}** · Всего: **{len(members) + len(pending)}**.\n"
             "Нажмите «Участвовать» — вы сразу попадёте в состав МП.\n"
             "Автор и руководство могут менять состав, результат и MVP. Итоговое подтверждение начислит баллы всему составу. До 100 участников.\n"
-            "Черновик действует 14 минут. Подтверждение сохранит отчёт и начислит очки."
+            "Черновик действует 1 час. Подтверждение сохранит отчёт и начислит очки."
         )
         return {"content": content, "embeds": [embed] if members or self.pending or self.draft.voice_channel_id or self.draft.outcome or self.draft.mvp_id else [], "view": self,
                 "allowed_mentions": discord.AllowedMentions.none()}
@@ -141,9 +145,12 @@ class ReportView(discord.ui.View):
 
     async def retire(self, reason: str):
         self.finish()
-        if self.original:
+        if self.message is not None or self.original:
             try:
-                await self.original.edit_original_response(content=reason, embeds=[], view=None)
+                if self.message is not None:
+                    await self.message.edit(content=reason, embeds=[], view=None)
+                else:
+                    await self.original.edit_original_response(content=reason, embeds=[], view=None)
             except Exception as error:
                 from lafamily.diagnostics import log_error
                 log_error("Не удалось отключить старый черновик", error)
@@ -164,6 +171,8 @@ class ReportView(discord.ui.View):
             await interaction.response.defer()
             await self.validate(interaction)
             self.original = interaction
+            if getattr(interaction, "message", None) is not None:
+                self.message = interaction.message
             if action == "discard":
                 self.finish()
                 await interaction.edit_original_response(content="Черновик отменён. Очки не начислялись.", embeds=[], view=None)
