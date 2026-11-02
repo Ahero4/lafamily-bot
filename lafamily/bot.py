@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from lafamily.config import Config
+from lafamily.modules.announcements import AnnouncementService, AnnouncementCommands
 from lafamily.modules.release_updates import ReleaseUpdates, register_release_updates
 from lafamily.errors import UserError
 from lafamily.database import Store
@@ -48,8 +49,10 @@ class FamilyBot(discord.Client):
         self.config = config
         self.store = store
         self.events = EventService(store)
+        self.announcements = AnnouncementService(self, store, config.guild_id)
         self.tree = FamilyTree(self, fallback_to_global=False)
         install_commands(self.tree, self.events, config.guild_id)
+        self.tree.add_command(AnnouncementCommands(self.announcements), guild=discord.Object(id=config.guild_id))
         register_barn_commands(self.tree, store, config.guild_id)
         self.onboarding = OnboardingService(store)
         register_onboarding(self.tree, self.onboarding, config.guild_id)
@@ -80,6 +83,7 @@ class FamilyBot(discord.Client):
 
     async def on_ready(self):
         logger.info("LaFamily запущен: %s", self.user)
+        self.announcements.start()
         await self.release_updates.announce()
 
     async def on_error(self, event_method: str, *args, **kwargs):
@@ -89,5 +93,6 @@ class FamilyBot(discord.Client):
             log_error(f"Необработанная ошибка события {event_method}", error)
 
     async def close(self):
+        await self.announcements.close()
         self.events.close()
         await super().close()

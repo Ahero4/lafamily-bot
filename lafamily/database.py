@@ -34,6 +34,18 @@ class Store:
             PRAGMA foreign_keys = ON;
             PRAGMA journal_mode = WAL;
             PRAGMA busy_timeout = 5000;
+            CREATE TABLE IF NOT EXISTS announcement_settings(guild_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS announcement_templates(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, name TEXT NOT NULL,
+                channel_id TEXT NOT NULL, role_id TEXT NOT NULL, body TEXT NOT NULL, image_ref TEXT,
+                UNIQUE(guild_id,name));
+            CREATE TABLE IF NOT EXISTS announcement_schedules(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL,
+                template_id INTEGER NOT NULL REFERENCES announcement_templates(id), kind TEXT NOT NULL,
+                starts_at TEXT, days TEXT, clock TEXT, enabled INTEGER NOT NULL DEFAULT 1);
+            CREATE TABLE IF NOT EXISTS announcement_attempts(
+                schedule_id INTEGER NOT NULL REFERENCES announcement_schedules(id), starts_at TEXT NOT NULL,
+                state TEXT NOT NULL, message_id TEXT, PRIMARY KEY(schedule_id,starts_at));
             CREATE TABLE IF NOT EXISTS settings (
                 guild_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
                 organizer_role_id TEXT NOT NULL, manager_role_id TEXT NOT NULL
@@ -490,6 +502,61 @@ class Store:
     def uncertain_release_delivery(self, guild_id, channel_id, version):
         self.db.execute("UPDATE release_deliveries SET state='uncertain' WHERE guild_id=? AND channel_id=? AND version=?",
                         (guild_id, channel_id, version))
+
+    def announcement_storage(self, guild_id):
+        row = self.db.execute('SELECT * FROM announcement_settings WHERE guild_id=?', (guild_id,)).fetchone()
+        return dict(row) if row else None
+
+    def configure_announcement_storage(self, guild_id, channel_id):
+        self.db.execute('INSERT INTO announcement_settings VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id', (guild_id,channel_id))
+
+    def announcement_template(self, guild_id, number):
+        row = self.db.execute('SELECT * FROM announcement_templates WHERE guild_id=? AND id=?', (guild_id,number)).fetchone()
+        return dict(row) if row else None
+
+    def announcement_templates(self, guild_id):
+        return [dict(r) for r in self.db.execute('SELECT * FROM announcement_templates WHERE guild_id=? ORDER BY name', (guild_id,))]
+
+    def save_announcement_template(self, guild_id, name, channel_id, role_id, body, image_ref=None, clear_image=False):
+        with self.transaction():
+            self.db.execute("""INSERT INTO announcement_templates(guild_id,name,channel_id,role_id,body,image_ref)
+                VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id,name) DO UPDATE SET
+                channel_id=excluded.channel_id, role_id=excluded.role_id, body=excluded.body,
+                image_ref=CASE WHEN ? THEN NULL WHEN excluded.image_ref IS NOT NULL THEN excluded.image_ref ELSE announcement_templates.image_ref END""",
+                (guild_id,name,channel_id,role_id,body,image_ref,int(clear_image)))
+            return self.db.execute('SELECT id FROM announcement_templates WHERE guild_id=? AND name=?',(guild_id,name)).fetchone()['id']
+
+    def create_announcement_schedule(self, guild_id, template_id, kind, starts_at, days, clock):
+        with self.transaction():
+            if not self.announcement_template(guild_id,template_id):
+                raise UserError('Шаблон не найден на этом сервере.')
+            result = self.db.execute('INSERT INTO announcement_schedules(guild_id,template_id,kind,starts_at,days,clock) VALUES (?,?,?,?,?,?)',
+                                     (guild_id,template_id,kind,starts_at,days,clock))
+            return result.lastrowid
+
+    def announcement_schedules(self, guild_id, enabled_only=False):
+        return [dict(r) for r in self.db.execute("""SELECT s.*,t.name,t.channel_id,t.role_id,t.body,t.image_ref
+            FROM announcement_schedules s JOIN announcement_templates t ON t.id=s.template_id
+            WHERE s.guild_id=? AND (?=0 OR s.enabled=1) ORDER BY s.id""",(guild_id,int(enabled_only)))]
+
+    def disable_announcement_schedule(self, guild_id, number):
+        result = self.db.execute('UPDATE announcement_schedules SET enabled=0 WHERE guild_id=? AND id=?',(guild_id,number))
+        if not result.rowcount:
+            raise UserError('Расписание на этом сервере не найдено.')
+
+    def announcement_attempt(self, schedule_id, starts_at):
+        row = self.db.execute('SELECT * FROM announcement_attempts WHERE schedule_id=? AND starts_at=?',(schedule_id,starts_at)).fetchone()
+        return dict(row) if row else None
+
+    def claim_announcement(self, schedule_id, starts_at):
+        with self.transaction():
+            result = self.db.execute("""INSERT OR IGNORE INTO announcement_attempts(schedule_id,starts_at,state)
+                SELECT id,?,'pending' FROM announcement_schedules WHERE id=? AND enabled=1""",(starts_at,schedule_id))
+            return bool(result.rowcount)
+
+    def finish_announcement(self, schedule_id, starts_at, state, message_id):
+        self.db.execute('UPDATE announcement_attempts SET state=?,message_id=? WHERE schedule_id=? AND starts_at=?',
+                        (state,message_id,schedule_id,starts_at))
 
     def close(self):
         self.db.close()
