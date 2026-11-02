@@ -273,6 +273,52 @@ class ReportView(discord.ui.View):
                 self.draft.members.remove(member_id)
                 raise
 
+    @discord.ui.button(label="Добавить из голосового", custom_id="voice", style=discord.ButtonStyle.secondary, row=2)
+    async def choose_voice(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await self.validate(interaction)
+        if getattr(interaction, "message", None) is not None:
+            self.message = interaction.message
+        picker = VoiceRosterPicker(self, interaction.user.id)
+        await interaction.edit_original_response(
+            content="Выберите голосовой канал. Его текущие участники без ботов будут добавлены к составу без дублей. "
+                    "Ранее записанные останутся. Выбранный канал станет каналом МП: самозапись будет проверять присутствие в нём.",
+            view=picker, allowed_mentions=discord.AllowedMentions.none())
+
+    async def import_voice(self, interaction: discord.Interaction, channel_id: int):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        async with self.lock:
+            await self.validate(interaction)
+            channel = await interaction.guild.fetch_channel(channel_id)
+            if not isinstance(channel, discord.VoiceChannel) or str(channel.guild.id) != self.draft.guild_id:
+                raise UserError("Выберите голосовой канал этого сервера.")
+            if not channel.permissions_for(interaction.user).view_channel:
+                raise UserError("У вас нет доступа к выбранному голосовому каналу.")
+            members = list(dict.fromkeys([*self.draft.members,
+                *(str(member.id) for member in channel.members if not member.bot)]))
+            if len(members) > 100:
+                raise UserError("Общий состав превышает 100 участников. Состав не изменён.")
+            if self.message is None:
+                raise UserError("Сообщение черновика недоступно. Откройте выбор канала из отчёта заново.")
+            old_voice = self.draft.voice_channel_id
+            added = len(members) - len(self.draft.members)
+            self.draft.voice_channel_id = str(channel.id)
+            try:
+                # Обновляем общий черновик через bot API, а не личное окно выбора канала.
+                await self.message.edit(**self.payload(members))
+            except BaseException:
+                self.draft.voice_channel_id = old_voice
+                self.payload()
+                self.needs_refresh = True
+                raise
+            self.draft.members = members
+            self.pending = [member for member in self.pending if member not in members]
+            self.needs_refresh = False
+        await interaction.edit_original_response(
+            content=f"Из <#{channel.id}> добавлено: {added}. Всего в составе: {len(members)}. "
+                    "Проверьте общий черновик и подтвердите отчёт, когда он готов.",
+            view=None, allowed_mentions=discord.AllowedMentions.none())
+
     @discord.ui.select(cls=discord.ui.UserSelect, custom_id="add", placeholder="Организатор: добавить участников", min_values=1, max_values=25, row=0)
     async def select_members(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         await self.dispatch("add", interaction, select.values)
@@ -301,3 +347,26 @@ class ReportView(discord.ui.View):
                        min_values=0, max_values=1, row=4)
     async def select_mvp(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         await self.dispatch("mvp", interaction, select.values)
+
+
+class VoiceRosterPicker(discord.ui.View):
+    """Личное окно выбора, не занимающее дополнительную строку основного отчёта."""
+    def __init__(self, parent, owner_id):
+        super().__init__(timeout=max(1, min(300, parent.expires_at - time.monotonic())))
+        self.parent = parent
+        self.owner_id = owner_id
+
+    async def on_error(self, interaction, error, item):
+        await send_error(interaction, error)
+
+    async def interaction_check(self, interaction):
+        if interaction.user.id != self.owner_id:
+            await send_error(interaction, UserError("Откройте выбор канала своей кнопкой в отчёте."))
+            return False
+        return True
+
+    @discord.ui.select(cls=discord.ui.ChannelSelect, channel_types=[discord.ChannelType.voice],
+                       placeholder="Выберите голосовой канал для добавления состава", min_values=1, max_values=1)
+    async def channel_select(self, interaction, select):
+        await self.parent.import_voice(interaction, select.values[0].id)
+        self.stop()
