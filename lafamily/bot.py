@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from lafamily.config import Config
+from lafamily.modules.database_backups import DatabaseBackups, register_database_backups
 from lafamily.modules.announcements import AnnouncementService, AnnouncementCommands
 from lafamily.modules.release_updates import ReleaseUpdates, register_release_updates
 from lafamily.errors import UserError
@@ -26,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 class FamilyTree(app_commands.CommandTree):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if getattr(self.client, 'backups', None) and self.client.backups.restoring:
+            await interaction.response.send_message('База восстанавливается. Дождитесь переподключения бота.', ephemeral=True)
+            return False
         if interaction.guild_id != self.client.config.guild_id:
             await interaction.response.send_message("Команда доступна только на сервере семьи.", ephemeral=True)
             return False
@@ -48,6 +52,8 @@ class FamilyBot(discord.Client):
                          allowed_mentions=discord.AllowedMentions.none(), proxy=config.proxy, chunk_guilds_at_startup=False)
         self.config = config
         self.store = store
+        self.restore_request = None
+        self.startup_notice = None
         self.events = EventService(store)
         self.announcements = AnnouncementService(self, store, config.guild_id)
         self.tree = FamilyTree(self, fallback_to_global=False)
@@ -61,6 +67,8 @@ class FamilyBot(discord.Client):
         register_release_updates(self.tree, self.release_updates, config.guild_id)
         self.prices = PriceService(self, store, config.guild_id)
         register_price_commands(self.tree, self.prices, config.guild_id)
+        self.backups = DatabaseBackups(self, store, config.guild_id)
+        register_database_backups(self.tree, self.backups, config.guild_id)
 
     async def setup_hook(self):
         # Постоянные кнопки продолжают работать после перезапуска.
@@ -76,13 +84,24 @@ class FamilyBot(discord.Client):
         logger.info("Команды LaFamily зарегистрированы на сервере %s: %s", self.config.guild_id, len(commands))
 
     async def on_message(self, message):
-        await self.prices.handle(message)
+        if not self.backups.restoring:
+            await self.prices.handle(message)
 
     async def on_raw_message_edit(self, payload):
-        await self.prices.handle_edit(payload)
+        if not self.backups.restoring:
+            await self.prices.handle_edit(payload)
 
     async def on_ready(self):
         logger.info("LaFamily запущен: %s", self.user)
+        if self.startup_notice:
+            channel_id, content = self.startup_notice
+            self.startup_notice = None
+            try:
+                channel = await self.fetch_channel(int(channel_id))
+                await channel.send(content=content, allowed_mentions=discord.AllowedMentions.none())
+            except Exception as error:
+                log_error('Не удалось отправить результат восстановления БД', error)
+        self.backups.start()
         self.announcements.start()
         await self.release_updates.announce()
 
@@ -93,6 +112,7 @@ class FamilyBot(discord.Client):
             log_error(f"Необработанная ошибка события {event_method}", error)
 
     async def close(self):
+        await self.backups.close()
         await self.announcements.close()
         self.events.close()
         await super().close()

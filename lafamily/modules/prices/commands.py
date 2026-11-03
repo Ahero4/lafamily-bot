@@ -24,6 +24,9 @@ def register_price_commands(tree, service, guild_id):
         await require_access_async(interaction, service.store, 'manager')
         service.require_enabled()
         service.require_channel(channel, interaction.guild)
+        backups = await database_call(service.store, 'database_backup_settings', str(interaction.guild_id))
+        if backups and backups['channel_id'] == str(channel.id):
+            raise UserError('Канал цен должен отличаться от канала бэкапов.')
         admin_channel = await database_call(service.store, 'admin_report_channel', str(interaction.guild_id))
         if admin_channel == str(channel.id):
             raise UserError('Канал цен должен отличаться от канала админских отчётов.')

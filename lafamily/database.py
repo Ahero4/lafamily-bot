@@ -10,9 +10,10 @@ from lafamily.errors import UserError
 from lafamily.modules.events.models import Draft
 from lafamily.modules.events.time import timestamp
 from lafamily.price_delivery_store import PriceDeliveryStore
+from lafamily.backup_store import BackupStore
 
 
-class Store(PriceDeliveryStore):
+class Store(PriceDeliveryStore, BackupStore):
     def __init__(self, path: str | Path):
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +106,7 @@ class Store(PriceDeliveryStore):
             INSERT OR IGNORE INTO settings_roles SELECT guild_id, 'organizer', organizer_role_id FROM settings;
             INSERT OR IGNORE INTO settings_roles SELECT guild_id, 'manager', manager_role_id FROM settings;
         """)
+        self.init_database_backups()
         self.init_price_delivery()
         self.migrate_event_bonuses()
         # Старые подписки сохраняют прежний режим и защиту от повторных тегов.

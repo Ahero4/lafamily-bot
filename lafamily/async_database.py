@@ -6,6 +6,7 @@ from functools import partial
 from pathlib import Path
 
 from lafamily.database import Store
+from lafamily.errors import UserError
 
 
 class DatabaseWorker:
@@ -14,6 +15,7 @@ class DatabaseWorker:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lafamily-sqlite")
         self.store = None
         self.closing = False
+        self.paused = False
 
     async def __aenter__(self):
         try:
@@ -27,8 +29,26 @@ class DatabaseWorker:
     async def call(self, method: str, *args, **kwargs):
         if self.closing or self.store is None:
             raise RuntimeError("Работа с базой уже завершена.")
+        if self.paused:
+            raise UserError('База восстанавливается. Дождитесь переподключения бота и откройте команду заново.')
         callback = partial(getattr(self.store, method), *args, **kwargs)
         return await asyncio.get_running_loop().run_in_executor(self.executor, callback)
+
+    async def freeze_and_export(self, target):
+        if self.closing or self.paused or self.store is None:
+            raise UserError('Работа с базой сейчас недоступна.')
+        # Уже принятые операции выполнятся перед копированием в том же executor.
+        # Последующие вызовы отклоняются до закрытия старого worker.
+        self.paused = True
+        try:
+            await asyncio.get_running_loop().run_in_executor(self.executor, self.store.export_database, target)
+        except BaseException:
+            self.paused = False
+            raise
+
+    def resume(self):
+        if not self.closing:
+            self.paused = False
 
     async def __aexit__(self, exc_type, exc, tb):
         self.closing = True
