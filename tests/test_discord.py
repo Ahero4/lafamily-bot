@@ -151,7 +151,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
             commands = bot.tree.get_commands(guild=discord.Object(id=int(GUILD)))
             data = {command.name: command.to_dict(bot.tree) for command in commands}
             self.assertEqual(set(data), {"мп", "статистика", "настройки", "помощь", "инфо", "проверка-ника", "скупщик-настройка", "скупщик-обработать", "скупщик-уведомление", "админ-отчёты", "скупщик-статистика", "статус", "коровник-сбор", "коровник-настройка", "старт", "модерация-настройки", "обновления-канал", "анонс"})
-            self.assertEqual({item["name"] for item in data["инфо"]["options"]}, {"общее", "фарм"})
+            self.assertEqual({item["name"] for item in data["инфо"]["options"]}, {"общее", "фарм", "админам"})
             self.assertEqual({item["name"] for item in data["старт"]["options"]}, {"участник", "администратор"})
             event = data["мп"]["options"]
             self.assertEqual({item["name"] for item in event}, {"отчёт", "виды", "вид-добавить", "вид-отключить", "просмотр", "отменить", "статистика", "выплата-премии"})

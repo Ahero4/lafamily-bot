@@ -59,7 +59,7 @@ def register_price_commands(tree, service, guild_id):
         await interaction.edit_original_response(content=answers[status])
 
 
-    @tree.command(name='скупщик-уведомление', description='Выбрать товары для уведомлений о максимальной цене', guild=guild, extras={'access': 'all'})
+    @tree.command(name='скупщик-уведомление', description='Настроить товары и пороги для личных уведомлений о ценах', guild=guild, extras={'access': 'all'})
     @app_commands.guild_only()
     async def subscribe(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)

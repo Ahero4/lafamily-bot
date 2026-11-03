@@ -12,7 +12,7 @@ from lafamily.errors import UserError
 from lafamily.modules.admin_start import admin_setup_guide
 from lafamily.release import VERSION, LATEST_UPDATE
 from lafamily.async_database import database_call
-from lafamily.info import send_info, send_farm_info
+from lafamily.info import send_info, send_farm_info, send_admin_info
 from lafamily.modules.events.models import Draft
 from lafamily.modules.events.payouts import send_payout
 from lafamily.modules.events.service import EventService
@@ -260,7 +260,7 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
     info_group = app_commands.Group(name="инфо", description="Справка по командам семьи и фарму", guild_only=True)
     tree.add_command(info_group, guild=guild)
 
-    @info_group.command(name="общее", description="Все команды, права ролей и доступные вам действия")
+    @info_group.command(name="общее", description="Команды участников и организаторов: описание, параметры и права")
     @app_commands.guild_only()
     async def info_command(interaction: discord.Interaction):
         await send_info(interaction, tree, service.store)
@@ -269,6 +269,11 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
     @app_commands.guild_only()
     async def farm_info_command(interaction: discord.Interaction):
         await send_farm_info(interaction, service.store)
+
+    @info_group.command(name="админам", description="Настройки, управление МП, анонсы и отчёты для руководства и администраторов", extras={"access": "manager"})
+    @app_commands.guild_only()
+    async def admin_info_command(interaction: discord.Interaction):
+        await send_admin_info(interaction, tree, service.store)
 
     @tree.command(name="помощь", description="Общая справка по командам и правам (как /инфо общее)", guild=guild)
     @app_commands.guild_only()
@@ -312,7 +317,8 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
             "В той же команде можно изменить подписки или отключить их.", inline=False)
         embed.add_field(name="Если хочется разобраться подробнее", value=
             "🌾 `/инфо фарм` — цены и подписки.\n"
-            "📖 `/инфо общее` или `/помощь` — все команды и права.\n"
+            "📖 `/инфо общее` или `/помощь` — команды участников и организаторов.\n"
+            "🛠️ Администраторам и руководству: `/инфо админам` — настройки и управление ботом.\n"
             "Не хватает доступа? Обратись к руководству семьи.", inline=False)
         embed.set_footer(text="Это сообщение видишь только ты. Вернуться к нему можно командой /старт участник.")
         await interaction.response.send_message(embed=embed, ephemeral=True,

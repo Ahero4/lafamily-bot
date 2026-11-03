@@ -1,19 +1,24 @@
-"""Общая справка: описания берутся из команд, права — из тех же проверок, что при выполнении."""
+"""Личная справка: публичные команды, отдельный справочник управления и памятка фарма."""
+import asyncio
+from types import SimpleNamespace
 
 import discord
-from types import SimpleNamespace
 from discord import app_commands
 
-from lafamily.database import Store
+from lafamily.access_roles import role_ids
 from lafamily.async_database import database_call
 from lafamily.errors import UserError
-from lafamily.access_roles import role_ids
-from lafamily.permissions import require_access
+from lafamily.info_guides import COMMAND_GUIDES
+from lafamily.permissions import require_access, require_access_async
+from lafamily.responses import send_error
+
+ACCESS_LABELS = {'all': 'все участники', 'organizer': 'организаторы, руководство и администраторы',
+                 'manager': 'руководство и администраторы', 'admin': 'только администратор Discord'}
+SYNTAX = '`<параметр>` — обязательный, `[параметр]` — необязательный. Значения выбирайте в полях команды Discord.'
 
 
-def available(interaction: discord.Interaction, store: Store, level: str) -> bool:
-    """Справка не вычисляет права отдельно от бота: используем действующую проверку."""
-    if level == "all":
+def available(interaction, store, level):
+    if level == 'all':
         return interaction.guild is not None
     try:
         require_access(interaction, store, level)
@@ -22,145 +27,213 @@ def available(interaction: discord.Interaction, store: Store, level: str) -> boo
     return True
 
 
-def role_label(interaction: discord.Interaction, role_id: str | None) -> str:
+def role_label(interaction, role_id):
     if not role_id:
-        return "роль не назначена"
+        return 'роль не назначена'
     role = interaction.guild.get_role(int(role_id)) if role_id.isdigit() else None
-    return role.mention if role else "назначенная роль удалена или недоступна"
+    return role.mention if role else 'назначенная роль удалена или недоступна'
 
 
-def build_info(interaction: discord.Interaction, tree: app_commands.CommandTree, store: Store) -> discord.Embed:
+def command_usage(command):
+    parameters = ' '.join(f'<{p.display_name}>' if p.required else f'[{p.display_name}]' for p in command.parameters)
+    return f'/{command.qualified_name}' + (f' {parameters}' if parameters else '')
+
+
+def _command_pages(interaction, tree, store, administrative=False):
     settings = store.settings(str(interaction.guild_id)) or {}
-    organizer = ", ".join(dict.fromkeys(role_label(interaction, role) for role in role_ids(settings, "organizer"))) or "роль не назначена"
-    manager = ", ".join(dict.fromkeys(role_label(interaction, role) for role in role_ids(settings, "manager"))) or "роль не назначена"
-    if available(interaction, store, "admin"):
-        personal = "У вас права **администратора Discord** — доступны все команды бота."
-    elif available(interaction, store, "manager"):
-        personal = f"Ваш доступ: **руководство** ({manager}). Можно управлять МП, подавать отчёты и настраивать канал цен."
-    elif available(interaction, store, "organizer"):
-        personal = f"Ваш доступ: **организатор** ({organizer}). Можно подавать отчёты о МП."
+    organizers = ', '.join(dict.fromkeys(role_label(interaction,r) for r in role_ids(settings,'organizer'))) or 'роль не назначена'
+    managers = ', '.join(dict.fromkeys(role_label(interaction,r) for r in role_ids(settings,'manager'))) or 'роль не назначена'
+    levels = ('manager','admin') if administrative else ('all','organizer')
+    title = 'LaFamily • руководство и администраторы' if administrative else 'LaFamily • команды и права'
+    if available(interaction,store,'admin'):
+        personal = 'Ваш доступ: **администратор Discord**.'
+    elif available(interaction,store,'manager'):
+        personal = 'Ваш доступ: **руководство**.'
+    elif available(interaction,store,'organizer'):
+        personal = 'Ваш доступ: **организатор**.'
     else:
-        personal = "Ваш доступ: **участник**. Можно смотреть отчёты, виды МП и статистику, выбирать товары для уведомлений о ценах."
-
-    embed = discord.Embed(title="LaFamily • команды и права", colour=0x7289DA,
-        description=personal + "\n\n🌾 Цены и подписки: `/инфо фарм`\n\n✅ — доступно вам · 🔒 — требуется другая роль.\n"
-        "`<параметр>` — обязательный, `[параметр]` — необязательный. Значения выбираются в полях команды Discord.")
-    groups = {
-        "all": ("Все участники", "Любой участник сервера."),
-        "organizer": ("Подача отчётов", "Любая роль из списков «Организаторы» и «Руководство» ниже; администратор Discord."),
-        "manager": ("Управление МП и ценами", "Любая роль из списка «Руководство» ниже; администратор Discord."),
-        "admin": ("Администратор", "Только участники с правом «Администратор» в Discord."),
-    }
-    commands = {level: [] for level in groups}
-    # Обходим именно зарегистрированные команды, чтобы новые описания не дублировать вручную.
-    for command in tree.walk_commands(guild=discord.Object(id=interaction.guild_id)):
-        if not isinstance(command, app_commands.Command):
-            continue
-        level = command.extras.get("access", "all")
-        parameters = " ".join(
-            f"<{param.display_name}>" if param.required else f"[{param.display_name}]"
-            for param in command.parameters
-        )
-        usage = f"/{command.qualified_name}" + (f" {parameters}" if parameters else "")
-        commands[level].append(f"`{usage}`\n{command.description}")
-
-    for level, (title, audience) in groups.items():
-        status = "✅" if available(interaction, store, level) else "🔒"
-        # Поле Discord ограничено 1024 символами; длинную группу делим на продолжения.
-        value = f"**Кто может:** {audience}\n\n"
-        for line in sorted(commands[level]):
-            if len(value) + len(line) + 2 > 1000:
-                embed.add_field(name=f"{status} {title}", value=value.rstrip(), inline=False)
-                value = ""
-            value += line + "\n\n"
-        embed.add_field(name=f"{status} {title}", value=value.rstrip(), inline=False)
-
-    embed.add_field(name="Организаторы", value=organizer, inline=False)
-    embed.add_field(name="Руководство", value=manager, inline=False)
+        personal = 'Ваш доступ: **участник**.'
+    navigation = ('Для участников: `/инфо общее`; цены и подписки: `/инфо фарм`.' if administrative else
+                  '🌾 Цены и подписки: `/инфо фарм`.\nНастройки и управление для руководства и администраторов: `/инфо админам`.')
+    description = f'{personal}\n{navigation}\n\n✅ — доступно вам · 🔒 — нужна другая роль.\n{SYNTAX}'
+    def new_page():
+        return discord.Embed(title=title,description=description,colour=0x7289DA)
+    pages = []
+    page = new_page()
+    page.add_field(name='Организаторы',value=organizers,inline=False)
+    page.add_field(name='Руководство',value=managers,inline=False)
     if not settings:
-        embed.add_field(name="Первый запуск", value="Роли ещё не настроены. Администратору нужно выполнить `/настройки`.", inline=False)
-    embed.add_field(name="📝 Отчёт по МП", value=
-        "**1.** `/мп отчёт` — выберите вид и дату.\n"
-        "**2.** Добавьте состав вручную или кнопкой «Добавить из голосового», затем подтвердите — бот начислит очки.\n"
-        "Автор и руководство могут менять состав, результат и MVP открытого черновика и подтверждать его. Другие организаторы чужим черновиком не управляют.\n"
-        "Руководство задаёт ставки через `/мп вид-добавить`: очки, очки-победы, очки-mvp. Повтор того же названия обновляет вид, пропущенные ставки сохраняются. Победа добавляет очки всем, MVP — ещё выбранному участнику.\n"
-        "Ошибка в отчёте? Руководство отменяет его, организатор подаёт новый.", inline=False)
-    embed.add_field(name="💰 Недельные премии", value=
-        "Администратор: `/мп выплата-премии банк-денег [неделя]`. По умолчанию прошлая неделя. "
-        "Банк распределяется по всем положительным баллам, включая коровник и бонусы. "
-        "Остаток округления распределяется целыми долларами. Ответ личный; это расчёт без списания баллов и перевода денег.", inline=False)
-    embed.add_field(name="🐄 Сбор коровника", value=
-        "`/коровник-сбор сумма [участник]` — укажите сумму, например `157000` или `+157к`.\n"
-        "Без выбора участника баллы получает автор команды. Баллы за один сбор задаёт администратор через "
-        "`/коровник-настройка баллы`. Сборы входят в общий учёт; отменить ошибочный сбор можно через `/мп отменить` по номеру отчёта.", inline=False)
-    embed.add_field(name="🌾 Фарм и скупщики", value=
-        "Откройте `/инфо фарм`: там объяснены значки цен, подписки на товары и уведомления.", inline=False)
-    embed.add_field(name="🔎 Проверка ников", value=
-        "Администратор запускает `/проверка-ника [роль]`. Без роли проверяются все участники, кроме ботов.\n"
-        "Формат: `Name Surname | Static ID`. Должность перед именем допустима.\n"
-        "Тегирование нарушителей — только после подтверждения.", inline=False)
-    embed.set_footer(text="Неделя: с понедельника 00:00 по Москве. Дополнительные ограничения команд могут задаваться настройками Discord.")
-    return embed
+        page.add_field(name='Первый запуск',value='Роли ещё не настроены. Обратитесь к администратору сервера.',inline=False)
+    commands = [c for c in tree.walk_commands(guild=discord.Object(id=interaction.guild_id))
+                if isinstance(c,app_commands.Command) and c.extras.get('access','all') in levels]
+    commands.sort(key=lambda c: (levels.index(c.extras.get('access','all')),c.qualified_name))
+    for command in commands:
+        level = command.extras.get('access','all')
+        status = '✅' if available(interaction,store,level) else '🔒'
+        name = f'{status} /{command.qualified_name}'
+        guide = COMMAND_GUIDES.get(command.qualified_name,'Выберите параметры в полях команды Discord.')
+        value = f'`{command_usage(command)}`\n{command.description}.\n**Доступ:** {ACCESS_LABELS[level]}.\n{guide}'
+        # Один embed на страницу: оставляем запас для подвала и ограничений Discord.
+        if len(page) + len(name) + len(value) > 5400 or len(page.fields) >= 24:
+            pages.append(page)
+            page = new_page()
+        page.add_field(name=name,value=value,inline=False)
+    pages.append(page)
+    for index, embed in enumerate(pages,1):
+        embed.set_footer(text=f'Страница {index}/{len(pages)} · Все даты по Москве. Справка личная; кнопки действуют 10 минут.')
+    return pages
 
 
-async def send_info(interaction: discord.Interaction, tree: app_commands.CommandTree, store: Store):
-    # Ответ виден только вызвавшему участнику; упоминания ролей никого не уведомляют.
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    settings = await database_call(store, "settings", str(interaction.guild_id))
+def build_info_pages(interaction, tree, store):
+    return _command_pages(interaction,tree,store)
+
+
+def build_info(interaction, tree, store):
+    return build_info_pages(interaction,tree,store)[0]
+
+
+def build_admin_info_pages(interaction, tree, store):
+    return _command_pages(interaction,tree,store,administrative=True)
+
+
+class HelpPages(discord.ui.View):
+    def __init__(self, original, pages):
+        super().__init__(timeout=600)
+        self.original, self.pages = original, pages
+        self.owner_id, self.guild_id = original.user.id, original.guild_id
+        self.index = 0
+        self.lock = asyncio.Lock()
+        self.update_buttons(0)
+
+    def update_buttons(self, index):
+        self.previous.disabled = index == 0
+        self.next_page.disabled = index == len(self.pages) - 1
+        self.counter.label = f'{index+1} / {len(self.pages)}'
+
+    def check_owner(self, interaction):
+        if interaction.user.id != self.owner_id or interaction.guild_id != self.guild_id:
+            raise UserError('Это чужая справка. Откройте /инфо для себя.')
+        if self.is_finished():
+            raise UserError('Справка закрыта. Откройте нужный раздел /инфо заново.')
+
+    async def interaction_check(self, interaction):
+        try:
+            self.check_owner(interaction)
+        except UserError as error:
+            await send_error(interaction,error)
+            return False
+        return True
+
+    async def on_error(self, interaction, error, item):
+        await send_error(interaction,error)
+
+    async def move(self, interaction, delta):
+        async with self.lock:
+            self.check_owner(interaction)
+            target = max(0,min(len(self.pages)-1,self.index+delta))
+            self.update_buttons(target)
+            try:
+                await interaction.response.edit_message(embed=self.pages[target],view=self,
+                                                        allowed_mentions=discord.AllowedMentions.none())
+            except BaseException:
+                self.update_buttons(self.index)
+                raise
+            self.index = target
+
+    @discord.ui.button(label='Назад',style=discord.ButtonStyle.secondary)
+    async def previous(self, interaction, button):
+        await self.move(interaction,-1)
+
+    @discord.ui.button(label='1 / 1',disabled=True,style=discord.ButtonStyle.secondary)
+    async def counter(self, interaction, button):
+        pass
+
+    @discord.ui.button(label='Далее',style=discord.ButtonStyle.primary)
+    async def next_page(self, interaction, button):
+        await self.move(interaction,1)
+
+    async def on_timeout(self):
+        async with self.lock:
+            self.stop()
+            for item in self.children:
+                item.disabled = True
+            try:
+                await self.original.edit_original_response(view=self)
+            except discord.HTTPException:
+                pass
+
+
+async def _send_pages(interaction, pages):
+    view = HelpPages(interaction,pages) if len(pages) > 1 else None
+    try:
+        await interaction.edit_original_response(embed=pages[0],view=view,
+                                                 allowed_mentions=discord.AllowedMentions.none())
+    except BaseException:
+        if view:
+            view.stop()
+        raise
+
+
+async def send_info(interaction, tree, store):
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    settings = await database_call(store,'settings',str(interaction.guild_id))
     snapshot = SimpleNamespace(settings=lambda guild_id: settings)
-    await interaction.edit_original_response(embed=build_info(interaction, tree, snapshot),
-                                            allowed_mentions=discord.AllowedMentions.none())
+    await _send_pages(interaction,build_info_pages(interaction,tree,snapshot))
+
+
+async def send_admin_info(interaction, tree, store):
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    await require_access_async(interaction,store,'manager')
+    settings = await database_call(store,'settings',str(interaction.guild_id))
+    snapshot = SimpleNamespace(settings=lambda guild_id: settings)
+    await _send_pages(interaction,build_admin_info_pages(interaction,tree,snapshot))
 
 
 def build_farm_info(price_settings=None):
-    """Отдельная короткая памятка для фарма: один раздел — одно действие."""
     channel = f'<#{price_settings["channel_id"]}>' if price_settings else 'канал ещё не выбран руководством'
-    embed = discord.Embed(title="🌾 LaFamily • фарм и скупщики", colour=0x43B581,
-        description=f'**Канал цен:** {channel}\nСмотрите выгодные предложения и включайте уведомления по нужным товарам.')
-    embed.add_field(name="🔔 Как подписаться", value=
-        "**1.** Введите `/скупщик-уведомление`.\n"
-        "**2.** Отметьте несколько товаров в списке.\n"
-        "**3.** Нажмите **Подтвердить**.\n"
-        "Команда доступна всем участникам с доступом к каналу цен. Меню видите только вы.", inline=False)
-    embed.add_field(name="✏️ Изменить или отключить подписки", value=
-        "Откройте ту же команду — ваши товары уже отмечены.\n"
-        "Снимите лишние отметки и подтвердите. Пустой выбор отключает всё.\n"
-        "**Отмена** оставляет подписки без изменений. Меню действует **10 минут**.", inline=False)
-    embed.add_field(name="📣 Когда бот напишет вам в DM", value=
-        "По выбранному режиму обычной цены: **95 - 100** или **Макс. цена**. Порог можно задать всем выбранным товарам или отдельному товару. "
-        "Для продуктов проверяется единственный скупщик.\n"
-        "Проверка начинается со следующего нового автоматического отчёта.\n"
-        "Повторное уведомление — после выхода цены из выбранного условия и нового входа. "
-        "Разрешите личные сообщения от участников сервера. Подписки сохраняются после перезапуска.", inline=False)
-    embed.add_field(name="💰 Что означают значки", value=
-        "✅ + **жирный шрифт** — лучшая цена среди трёх скупщиков, даже если до максимума ещё далеко. "
-        "При равенстве отмечаются все.\n"
-        "🏆 — **95–100%** справочного максимума.\n"
-        "⚠️ — **90–95%**, не включая 95%.\n"
-        "Значки могут сочетаться. В скобках — цена **+20%**; подписка срабатывает по обычной цене.", inline=False)
-    embed.add_field(name="📦 Где искать свой товар", value=
-        "**Охота** — шкура, идеальное и хорошее мясо.\n"
-        "**Горщик** — медь, изумруд, рубин, алмаз.\n"
-        "**Рыбалка** — окунь, карп, форель, лосось.\n"
-        "**Нефтекачка** — бензин, солярка, керосин.\n"
-        "**Остальное** — жемчуг, фальшивые деньги.\n"
-        "**Продукты** — капуста, тыква, мандарины, ананасы.", inline=False)
-    embed.add_field(name="🛠️ Команды руководства", value=
-        "`/скупщик-настройка канал`\nВыбрать канал для автоматического сравнения. Исходные сообщения сохраняются.\n\n"
-        "`/скупщик-обработать сообщение`\nУказать ID исходного сообщения, чтобы создать или обновить сравнение. "
-        "Ручная обработка не уведомляет подписчиков.\n\n"
-        "Обе команды доступны **руководству и администратору Discord**.", inline=False)
-    embed.add_field(name="📊 Отчёты для администратора", value=
-        "`/админ-отчёты канал:#админский-чат` — отчёт после рассылки; без канала — отключить.\n"
-        "`/скупщик-статистика дней:30 вид:Таблица выгрузка:Да` — динамика по Москве и CSV. "
-        "Доступно администратору; история доставки собирается с момента обновления.", inline=False)
-    embed.set_footer(text="Цены меняются в течение часа. Общие команды и права: /инфо общее или /помощь.")
+    embed = discord.Embed(title='🌾 LaFamily • фарм и скупщики',colour=0x43B581,
+        description=f'**Канал цен:** {channel}\nСравнение цен находится в канале, уведомления по вашим товарам приходят в личные сообщения Discord (DM).')
+    embed.add_field(name='🔔 /скупщик-уведомление — включить подписки',value=
+        '**1.** Откройте `/скупщик-уведомление` и отметьте нужные товары в первом списке.\n'
+        '**2.** Во втором списке выберите, для кого менять режим: все выбранные товары или один товар. Само это поле режим не меняет.\n'
+        '**3.** В третьем списке задайте «95 - 100» или «Макс. цена». Например: всем товарам диапазон, а меди — максимум.\n'
+        '**4.** Проверьте список и нажмите **Подтвердить**. До подтверждения ничего не сохраняется.\n'
+        'Нужен доступ к каналу цен. Меню видите только вы; оно действует 10 минут.',inline=False)
+    embed.add_field(name='🎯 Как работают режимы',value=
+        '**95 - 100** — лучшая обычная цена от **95–100%** справочного максимума включительно; выше 100% этот режим не срабатывает.\n'
+        '**Макс. цена** — обычная цена достигла максимума или выше.\n'
+        'Для сырья берётся лучшая цена среди трёх скупщиков, для продуктов — единственный продавец. Бонус +20% порог не меняет.',inline=False)
+    embed.add_field(name='📩 Где приходит уведомление',value=
+        'Каждый подписчик получает личное сообщение с товаром, ценой, скупщиком и ссылкой на отчёт. Разрешите ЛС от участников этого сервера.\n'
+        'При закрытых ЛС сообщение доставить нельзя; подписка при этом сохраняется. Ошибка одного человека не мешает другим. '
+        'Уведомления подписчиков в общий канал не отправляются. Успех отправки не означает прочтение.',inline=False)
+    embed.add_field(name='🔁 Когда ждать следующее уведомление',value=
+        'Проверка начинается со следующего нового автоматического отчёта. Внутри выбранного условия повторов нет. '
+        'Новый цикл — после выхода цены из условия и нового входа. Рост с 95% до 100% не вызывает второй сигнал в режиме диапазона. '
+        'Ручная обработка не уведомляет подписчиков. Подписки сохраняются после перезапуска.',inline=False)
+    embed.add_field(name='✏️ Изменить или отключить подписки',value=
+        'Снова откройте `/скупщик-уведомление`: сохранённые товары уже отмечены. Снимите лишние отметки или измените режим и подтвердите. '
+        '**Пустой выбор + Подтвердить** отключает все подписки. **Отмена** и истечение меню оставляют прежние настройки.',inline=False)
+    embed.add_field(name='💰 Значки в сравнении цен',value=
+        '✅ и **жирный** — лучшая цена среди трёх скупщиков; при равенстве выделяются все.\n'
+        '🏆 — **95–100%** справочного максимума. ⚠️ — **90–95%**, не включая 95%.\n'
+        'В скобках — бонусная цена **+20%**. Для уведомлений проверяется обычная цена.',inline=False)
+    embed.add_field(name='📦 Где искать свой товар',value=
+        '**Охота:** шкура, идеальное и хорошее мясо. **Горщик:** медь, изумруд, рубин, алмаз.\n'
+        '**Рыбалка:** окунь, карп, форель, лосось. **Нефтекачка:** бензин, солярка, керосин.\n'
+        '**Остальное:** жемчуг, фальшивые деньги. **Продукты:** капуста, тыква, мандарины, ананасы.',inline=False)
+    embed.add_field(name='🐄 /коровник-сбор — записать сбор',value=
+        '`/коровник-сбор сумма:+157к [участник]` — запишите сумму (от 1 до 1 000 000 000). '
+        'Без участника баллы получит автор команды; можно выбрать другого человека. Награда за сбор фиксированная. '
+        'Свои результаты смотрите в `/статистика моя`, семейный рейтинг — в `/статистика рейтинг`.',inline=False)
+    embed.add_field(name='📚 Другие разделы',value=
+        '`/инфо общее` или `/помощь` — команды участников и организаторов. '
+        'Руководству и администраторам: `/инфо админам` — настройки скупщиков, служебные отчёты и выгрузка истории доставки.',inline=False)
+    embed.set_footer(text='Справка личная. Цены сравниваются с локальным справочником максимумов.')
     return embed
 
 
 async def send_farm_info(interaction, store):
-    # Ответ личный: справка и упоминание канала не вызывают никаких уведомлений.
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    settings = await database_call(store, "price_settings", str(interaction.guild_id))
-    await interaction.edit_original_response(embed=build_farm_info(settings),
-                                            allowed_mentions=discord.AllowedMentions.none())
+    await interaction.response.defer(ephemeral=True,thinking=True)
+    settings = await database_call(store,'price_settings',str(interaction.guild_id))
+    await interaction.edit_original_response(embed=build_farm_info(settings),allowed_mentions=discord.AllowedMentions.none())
