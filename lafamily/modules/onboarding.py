@@ -228,7 +228,7 @@ class OnboardingService:
         if not approved:
             embed.colour = discord.Colour.red()
             embed.add_field(name='Причина', value=discord.utils.escape_markdown(row['reason'] or 'Отказ сохранён ранее.'), inline=False)
-        embed.set_footer(text=f"Решение администратора: {row['actor_id'] or 'сохранено ранее'}")
+        embed.set_footer(text=await self.decision_footer(interaction, row))
         result = 'Роль выдана, никнейм изменён. ' if approved else 'Заявка отклонена. '
         result += {'sent':'Участник уведомлён.', 'failed':'Личное сообщение не доставлено. Доставку можно повторить кнопкой карточки.',
                    'legacy':'Прежнее уведомление повторно не отправлялось.'}.get(state,
@@ -240,6 +240,27 @@ class OnboardingService:
             log_error('Решение по заявке сохранено; карточку обновить не удалось', error)
             result += ' Карточку обновить не удалось. Нажмите её кнопку проверки ещё раз: роль и решение не изменятся.'
         return result
+
+    @staticmethod
+    async def decision_footer(interaction, row):
+        approved = row['approved'] == 1
+        fallback = 'Утверждено администратором' if approved else 'Отклонено администратором'
+        if not row['actor_id']:
+            return fallback
+        try:
+            actor_id = int(row['actor_id'])
+            # При восстановлении берём автора сохранённого решения, а не нажавшего кнопку.
+            if interaction.user.id == actor_id:
+                actor = interaction.user
+            else:
+                actor = interaction.guild.get_member(actor_id)
+                if actor is None:
+                    actor = await interaction.guild.fetch_member(actor_id)
+            return f"{'Утвердил' if approved else 'Отклонил'}: {actor.display_name}"
+        except Exception as error:
+            # Недоступность имени не должна мешать обновлению уже обработанной заявки.
+            log_error('Не удалось получить имя администратора для карточки заявки', error)
+            return fallback
 
     @staticmethod
     async def notify(member, text):

@@ -254,6 +254,7 @@ class AuditAsyncTests(unittest.IsolatedAsyncioTestCase):
         await modal.on_submit(interaction)
         self.assertEqual(self.store.onboarding_request(M)['approved'],1)
         member.send.assert_awaited_once()
+        self.assertEqual(message.edit.call_args.kwargs['embed'].footer.text,'Утвердил: Admin')
         message.edit.side_effect = None
         restarted = OnboardingService(self.store)
         view = ReviewView(restarted)
@@ -305,6 +306,49 @@ class AuditAsyncTests(unittest.IsolatedAsyncioTestCase):
         member.send.assert_awaited_once()
         member.add_roles.assert_not_awaited()
         self.assertIn('отклонена',message.edit.call_args.kwargs['embed'].title)
+        self.assertEqual(message.edit.call_args.kwargs['embed'].footer.text,'Отклонил: Admin')
+
+    async def test_repair_uses_original_administrator_name_from_cache_or_api(self):
+        service,member,interaction,message,modal = self.onboarding()
+        await modal.on_submit(interaction)
+        interaction.user = SimpleNamespace(id=int(V),display_name='Other admin')
+        original = SimpleNamespace(id=int(A),display_name='Original admin')
+        for cached in (original,None):
+            with self.subTest(cached=cached is not None):
+                interaction.guild.get_member = lambda uid: cached
+                interaction.guild.fetch_member = AsyncMock(return_value=original)
+                await OnboardingService(self.store).complete(interaction,message)
+                self.assertEqual(message.edit.call_args.kwargs['embed'].footer.text,'Утвердил: Original admin')
+                if cached is None:
+                    interaction.guild.fetch_member.assert_awaited_once_with(int(A))
+                else:
+                    interaction.guild.fetch_member.assert_not_awaited()
+        self.assertEqual(self.store.onboarding_request(M)['actor_id'],A)
+        member.send.assert_awaited_once()
+        member.add_roles.assert_awaited_once()
+
+    async def test_unavailable_original_administrator_does_not_break_card_or_expose_id(self):
+        service,member,interaction,message,modal = self.onboarding()
+        await modal.on_submit(interaction)
+        interaction.user = SimpleNamespace(id=int(V),display_name='Other admin')
+        interaction.guild.get_member = lambda uid:None
+        interaction.guild.fetch_member = AsyncMock(side_effect=discord.NotFound(
+            SimpleNamespace(status=404,reason='Not found'),'left server'))
+        await OnboardingService(self.store).complete(interaction,message)
+        footer = message.edit.call_args.kwargs['embed'].footer.text
+        self.assertEqual(footer,'Утверждено администратором')
+        self.assertNotIn(A,footer)
+        self.assertIsNone(message.edit.call_args.kwargs['view'])
+        member.send.assert_awaited_once()
+        member.add_roles.assert_awaited_once()
+
+    async def test_legacy_decision_without_actor_keeps_neutral_footer_and_no_new_dm(self):
+        service,member,interaction,message,_ = self.onboarding()
+        self.store.db.execute("UPDATE onboarding_requests SET approved=-1,actor_id=NULL,notification_state='legacy' WHERE message_id=?",(M,))
+        await service.complete(interaction,message)
+        self.assertEqual(message.edit.call_args.kwargs['embed'].footer.text,'Отклонено администратором')
+        member.send.assert_not_awaited()
+        member.add_roles.assert_not_awaited()
 
     async def test_submission_is_saved_before_sending_and_buttons_recover_failed_binding(self):
         service = OnboardingService(self.store)
