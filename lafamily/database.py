@@ -9,9 +9,10 @@ from pathlib import Path
 from lafamily.errors import UserError
 from lafamily.modules.events.models import Draft
 from lafamily.modules.events.time import timestamp
+from lafamily.price_delivery_store import PriceDeliveryStore
 
 
-class Store:
+class Store(PriceDeliveryStore):
     def __init__(self, path: str | Path):
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -104,6 +105,7 @@ class Store:
             INSERT OR IGNORE INTO settings_roles SELECT guild_id, 'organizer', organizer_role_id FROM settings;
             INSERT OR IGNORE INTO settings_roles SELECT guild_id, 'manager', manager_role_id FROM settings;
         """)
+        self.init_price_delivery()
         self.migrate_event_bonuses()
         # Старые подписки сохраняют прежний режим и защиту от повторных тегов.
         if 'threshold' not in {r['name'] for r in self.db.execute('PRAGMA table_info(price_subscriptions)')}:
@@ -459,7 +461,7 @@ class Store:
                     alerts.append({'user_id': row['user_id'], 'item': row['item'], 'threshold': row['threshold']})
                 self.db.execute("UPDATE price_subscriptions SET notified=? WHERE guild_id=? AND user_id=? AND item=?",
                                 (int(at_maximum), guild_id, row['user_id'], row['item']))
-            return alerts
+            return self.track_price_alerts(guild_id, source_id, alerts)
 
     def release_channel(self, guild_id):
         row = self.db.execute('SELECT * FROM release_settings WHERE guild_id=?', (guild_id,)).fetchone()

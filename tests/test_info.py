@@ -43,7 +43,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         text = "\n".join(field.value for field in embed.fields)
         commands = [command for command in self.bot.tree.walk_commands(guild=discord.Object(id=GUILD))
                     if isinstance(command, app_commands.Command)]
-        self.assertEqual(len(commands), 31)
+        self.assertEqual(len(commands), 33)
         for command in commands:
             self.assertIn(f"/{command.qualified_name}", text)
             self.assertIn(command.description, text)

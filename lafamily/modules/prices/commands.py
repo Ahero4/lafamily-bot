@@ -6,10 +6,12 @@ from lafamily.async_database import database_call
 from lafamily.errors import UserError
 from lafamily.permissions import require_access_async
 from .subscriptions import PriceSubscriptionView
+from .delivery_reports import register_delivery_commands
 
 
 def register_price_commands(tree, service, guild_id):
     guild = discord.Object(id=guild_id)
+    register_delivery_commands(tree, service, guild)
 
     @tree.command(name='скупщик-настройка', description='Выбрать канал для сравнения цен скупщиков', guild=guild, extras={'access': 'manager'})
     @app_commands.guild_only()
@@ -20,6 +22,9 @@ def register_price_commands(tree, service, guild_id):
         await require_access_async(interaction, service.store, 'manager')
         service.require_enabled()
         service.require_channel(channel, interaction.guild)
+        admin_channel = await database_call(service.store, 'admin_report_channel', str(interaction.guild_id))
+        if admin_channel == str(channel.id):
+            raise UserError('Канал цен должен отличаться от канала админских отчётов.')
         await database_call(service.store, 'configure_prices', str(interaction.guild_id), str(interaction.user.id), str(channel.id))
         await interaction.edit_original_response(content=f'Канал цен: <#{channel.id}>. Новые полные отчёты будут обработаны автоматически. '
             'Исходные сообщения остаются, сравнение публикуется рядом. Для уже опубликованного отчёта используйте /скупщик-обработать.')
