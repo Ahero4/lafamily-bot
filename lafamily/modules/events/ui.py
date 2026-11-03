@@ -28,6 +28,16 @@ def add_members(embed: discord.Embed, members: list[str]):
 
 def report_embed(report: dict) -> discord.Embed:
     cancelled = bool(report["cancelled_at"])
+    if 'barn_amount' in report:
+        embed = discord.Embed(title=f"🐄 Коровник — сбор #{report['id']}" + (' — отменён' if cancelled else ''),
+                              colour=0xD64545 if cancelled else 0x43B581)
+        embed.add_field(name='Собрал', value=f"<@{report['members'][0]}>")
+        embed.add_field(name='Сумма', value=f"${report['barn_amount']:,}".replace(',', ' '))
+        embed.add_field(name='Начислено' if not cancelled else 'Исключено из статистики', value=f"{report['points']} балл.")
+        if cancelled:
+            embed.add_field(name='Причина отмены', value=escape_markdown(report['cancel_reason']), inline=False)
+        return embed.set_footer(text='Сбор отменён. Баллы исключены.' if cancelled else
+            'Баллы учтены в общей статистике. Ошибка? Обратитесь к руководству с номером сбора.')
     embed = discord.Embed(
         title=f"МП #{report['id']} — {'отменено' if cancelled else 'учтено'}",
         description=escape_markdown(report["type_name"]), colour=0xD64545 if cancelled else 0x41A878,
@@ -271,6 +281,8 @@ class ReportView(discord.ui.View):
                 await interaction.response.edit_message(**self.payload())
             except BaseException:
                 self.draft.members.remove(member_id)
+                self.needs_refresh = True
+                self.payload()
                 raise
 
     @discord.ui.button(label="Добавить из голосового", custom_id="voice", style=discord.ButtonStyle.secondary, row=2)

@@ -8,6 +8,7 @@ from lafamily.async_database import database_call
 from lafamily.permissions import require_access_async
 from lafamily.errors import UserError
 from lafamily.responses import send_error
+from lafamily.diagnostics import log_error
 
 
 def validate_identity(name, static):
@@ -57,21 +58,35 @@ class IdentityModal(discord.ui.Modal):
                 # При частичном сбое повторное утверждение безопасно: выдача той же роли идемпотентна.
                 await member.edit(nick=nickname, reason=f'Заявка одобрена {interaction.user.id}')
                 await member.add_roles(role, reason=f'Заявка одобрена {interaction.user.id}')
-                await database_call(service.store, 'approve_onboarding', str(self.message.id), str(interaction.user.id))
-                embed = service.embed(name, static, member.id)
-                embed.title = '✅ Заявка утверждена'
-                embed.set_footer(text=f'Утвердил: {interaction.user.display_name}')
-                await self.message.edit(embed=embed, view=None, allowed_mentions=discord.AllowedMentions.none())
-            delivered = await service.notify(member, f'✅ Ваша заявка на сервере «{interaction.guild.name}» утверждена. Роль выдана, ваш ник: {nickname}.')
-            await interaction.edit_original_response(content='Роль выдана, никнейм изменён. ' + ('Участник уведомлён.' if delivered else 'Не удалось отправить участнику личное сообщение.'))
+                await database_call(service.store, 'approve_onboarding', str(self.message.id), str(interaction.user.id), name, static)
+                result = await service.complete(interaction, self.message, member)
+            await interaction.edit_original_response(content=result)
         else:
             settings = await database_call(service.store, 'onboarding_settings', str(interaction.guild_id))
             if not settings or str(interaction.channel_id) != settings['entry_id']:
                 raise UserError('Форма устарела. Откройте её в настроенном канале получения роли.')
+            await database_call(service.store, 'ensure_channel_separation', str(interaction.guild_id), settings['review_id'])
             channel = await interaction.guild.fetch_channel(int(settings['review_id']))
-            message = await channel.send(embed=service.embed(name, static, interaction.user.id), allowed_mentions=discord.AllowedMentions.none())
-            await database_call(service.store, 'save_onboarding_request', str(message.id), str(interaction.guild_id), str(interaction.user.id), settings['role_id'])
-            await message.edit(view=ReviewView(service))
+            # Сохраняем заявку ДО отправки. Карточка сразу содержит постоянные кнопки.
+            pending_id = f'pending:{interaction.id}'
+            await database_call(service.store, 'save_onboarding_request', pending_id, str(interaction.guild_id),
+                str(interaction.user.id), settings['role_id'], name, static, settings['review_id'])
+            embed = service.embed(name, static, interaction.user.id)
+            embed.set_footer(text=f'Заявка: {interaction.id}')
+            try:
+                message = await channel.send(embed=embed, view=ReviewView(service), allowed_mentions=discord.AllowedMentions.none())
+            except Exception as error:
+                if isinstance(error, discord.HTTPException) and 400 <= error.status < 500 and error.status != 408:
+                    await database_call(service.store, 'discard_pending_onboarding', pending_id)
+                    raise UserError('Discord отклонил отправку заявки. Попросите администратора исправить доступ к каналу и подайте анкету снова.') from error
+                log_error('Отправка новой заявки не подтверждена; данные сохранены', error)
+                raise UserError('Отправка заявки не подтверждена. Попросите администратора проверить канал заявок перед повторной подачей.') from error
+            try:
+                await database_call(service.store, 'attach_onboarding_message', pending_id, str(message.id),
+                                    str(interaction.guild_id), settings['review_id'])
+            except Exception as error:
+                # Постоянная кнопка восстановит связь по номеру заявки в карточке.
+                log_error('Карточка заявки отправлена; привязка будет восстановлена при проверке', error)
             await interaction.edit_original_response(content='Заявка отправлена! Дождитесь проверки администратором.')
 
 
@@ -96,17 +111,21 @@ class ReviewView(EntryView):
     @discord.ui.button(label='Проверить / исправить и утвердить', style=discord.ButtonStyle.success, custom_id='onboarding:review')
     async def review(self, interaction, button):
         await require_access_async(interaction, self.service.store, 'admin')
-        row = await database_call(self.service.store, 'onboarding_request', str(interaction.message.id))
-        if not row or row['approved']:
-            raise UserError('Заявка не найдена или уже обработана.')
-        await interaction.response.send_modal(IdentityModal(self.service, row, interaction.message))
+        async with self.service.lock:
+            row = await self.service.request_for_message(interaction)
+            if row['approved']:
+                await interaction.response.defer(ephemeral=True, thinking=True)
+                result = await self.service.complete(interaction, interaction.message)
+                await interaction.edit_original_response(content=result)
+            else:
+                await interaction.response.send_modal(IdentityModal(self.service, row, interaction.message))
 
 
     @discord.ui.button(label='Отклонить заявку', style=discord.ButtonStyle.danger, custom_id='onboarding:reject')
     async def reject(self, interaction, button):
         await require_access_async(interaction, self.service.store, 'admin')
-        row = await database_call(self.service.store, 'onboarding_request', str(interaction.message.id))
-        if not row or row['approved'] or row['guild_id'] != str(interaction.guild_id):
+        row = await self.service.request_for_message(interaction)
+        if row['approved']:
             raise UserError('Заявка уже обработана или не найдена.')
         await interaction.response.send_modal(RejectModal(self.service, interaction.message))
 
@@ -131,30 +150,106 @@ class RejectModal(discord.ui.Modal, title='Отклонить заявку'):
             row = await database_call(self.service.store, 'onboarding_request', str(self.message.id))
             if not row or row['approved'] or row['guild_id'] != str(interaction.guild_id):
                 raise UserError('Заявка уже обработана или не найдена.')
-            member = await interaction.guild.fetch_member(int(row['user_id']))
             await database_call(self.service.store, 'reject_onboarding', str(self.message.id), str(interaction.user.id), reason)
-            # Решение сохраняется до уведомления: двойной клик не вызовет повторную рассылку.
-            delivered = await self.service.notify(member, f'❌ Ваша заявка на сервере «{interaction.guild.name}» отклонена.\nПричина: {reason}\nВы можете исправить данные и подать новую заявку.')
-            embed = self.message.embeds[0].copy()
-            embed.title = '❌ Заявка отклонена'
-            embed.colour = discord.Colour.red()
-            embed.add_field(name='Причина', value=discord.utils.escape_markdown(reason), inline=False)
-            embed.set_footer(text=f'Отклонил: {interaction.user.display_name}')
-            await self.message.edit(embed=embed, view=None, allowed_mentions=discord.AllowedMentions.none())
-        await interaction.edit_original_response(content='Заявка отклонена. ' + ('Участник уведомлён.' if delivered else 'Не удалось отправить участнику личное сообщение.'))
+            result = await self.service.complete(interaction, self.message)
+        await interaction.edit_original_response(content=result)
+
+
+class RecoveryView(discord.ui.View):
+    """Повторяем только незавершённую доставку; решение и роль не меняются."""
+    def __init__(self, service):
+        super().__init__(timeout=None)
+        self.service = service
+
+    async def on_error(self, interaction, error, item):
+        await send_error(interaction, error)
+
+    @discord.ui.button(label='Обновить карточку / уведомление', custom_id='onboarding:repair')
+    async def repair(self, interaction, button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await require_access_async(interaction, self.service.store, 'admin')
+        async with self.service.lock:
+            row = await self.service.request_for_message(interaction)
+            if not row['approved']:
+                raise UserError('Сначала проверьте заявку.')
+            result = await self.service.complete(interaction, interaction.message)
+        await interaction.edit_original_response(content=result)
 
 
 class OnboardingService:
     def __init__(self, store):
         self.store, self.lock = store, asyncio.Lock()
 
+    async def request_for_message(self, interaction):
+        message = interaction.message
+        row = await database_call(self.store, 'onboarding_request', str(message.id))
+        if row is None:
+            # Только собственная карточка бота может восстановить незавершённую привязку.
+            if message.author.id != interaction.client.user.id or not message.embeds:
+                raise UserError('Заявка не найдена.')
+            footer = message.embeds[0].footer.text or ''
+            match = re.fullmatch(r'Заявка: ([0-9]{17,20})', footer)
+            if not match:
+                raise UserError('Заявка не найдена.')
+            await database_call(self.store, 'attach_onboarding_message', f'pending:{match[1]}', str(message.id),
+                                str(interaction.guild_id), str(interaction.channel_id))
+            row = await database_call(self.store, 'onboarding_request', str(message.id))
+        if not row or row['guild_id'] != str(interaction.guild_id):
+            raise UserError('Заявка не найдена на этом сервере.')
+        return row
+
+    async def complete(self, interaction, message, member=None):
+        row = await database_call(self.store, 'onboarding_request', str(message.id))
+        if not row or row['guild_id'] != str(interaction.guild_id) or not row['approved']:
+            raise UserError('Решение по заявке не найдено.')
+        name = row['name'] or message.embeds[0].fields[0].value
+        static = row['static'] or message.embeds[0].fields[1].value
+        approved = row['approved'] == 1
+        if await database_call(self.store, 'claim_onboarding_notification', str(message.id)):
+            state = 'uncertain'
+            sending = False
+            try:
+                if member is None:
+                    member = await interaction.guild.fetch_member(int(row['user_id']))
+                text = (f'✅ Ваша заявка на сервере «{interaction.guild.name}» утверждена. Роль выдана, ваш ник: {name} | {static}.'
+                        if approved else f'❌ Ваша заявка на сервере «{interaction.guild.name}» отклонена.\nПричина: {row["reason"]}\nВы можете исправить данные и подать новую заявку.')
+                sending = True
+                state = 'sent' if await self.notify(member, text) else 'failed'
+            except (discord.Forbidden, discord.NotFound):
+                state = 'failed'
+            except Exception as error:
+                state = 'uncertain' if sending else 'failed'
+                log_error('Доставка решения по заявке не подтверждена; повтор DM отключён', error)
+            await database_call(self.store, 'finish_onboarding_notification', str(message.id), state)
+        row = await database_call(self.store, 'onboarding_request', str(message.id))
+        state = row['notification_state']
+        embed = self.embed(name, static, int(row['user_id']))
+        embed.title = '✅ Заявка утверждена' if approved else '❌ Заявка отклонена'
+        if not approved:
+            embed.colour = discord.Colour.red()
+            embed.add_field(name='Причина', value=discord.utils.escape_markdown(row['reason'] or 'Отказ сохранён ранее.'), inline=False)
+        embed.set_footer(text=f"Решение администратора: {row['actor_id'] or 'сохранено ранее'}")
+        result = 'Роль выдана, никнейм изменён. ' if approved else 'Заявка отклонена. '
+        result += {'sent':'Участник уведомлён.', 'failed':'Личное сообщение не доставлено. Доставку можно повторить кнопкой карточки.',
+                   'legacy':'Прежнее уведомление повторно не отправлялось.'}.get(state,
+                   'Доставка личного сообщения не подтверждена; повтор отключён, чтобы не создавать дубли.')
+        try:
+            await message.edit(embed=embed, view=RecoveryView(self) if state == 'failed' else None,
+                               allowed_mentions=discord.AllowedMentions.none())
+        except Exception as error:
+            log_error('Решение по заявке сохранено; карточку обновить не удалось', error)
+            result += ' Карточку обновить не удалось. Нажмите её кнопку проверки ещё раз: роль и решение не изменятся.'
+        return result
+
     @staticmethod
     async def notify(member, text):
         try:
             await member.send(text, allowed_mentions=discord.AllowedMentions.none())
             return True
-        except discord.HTTPException:
-            return False
+        except discord.HTTPException as error:
+            if 400 <= error.status < 500 and error.status != 408:
+                return False
+            raise
 
     @staticmethod
     def embed(name, static, user_id):

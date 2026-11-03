@@ -20,18 +20,20 @@ class EventService:
         self.store = store
         self.views: dict[tuple[str, str], ReportView] = {}
 
-    async def channel(self, guild: discord.Guild, channel_id: str) -> discord.TextChannel:
+    async def channel(self, guild: discord.Guild, channel_id: str, *, allow_thread=False):
+        await database_call(self.store, 'ensure_channel_separation', str(guild.id), channel_id)
         try:
             channel = await guild.fetch_channel(int(channel_id))
             me = guild.me
         except discord.DiscordException as error:
             raise UserError("Канал отчётов недоступен. Попросите администратора проверить /бот настройки.") from error
-        if not isinstance(channel, discord.TextChannel):
+        if not isinstance(channel, discord.TextChannel) and not (allow_thread and isinstance(channel, discord.Thread)):
             raise UserError("Для отчётов нужен обычный текстовый канал.")
         if me is None:
             raise UserError("Информация о правах бота ещё не загружена. Повторите действие после подключения.")
         permissions = channel.permissions_for(me)
-        if not (permissions.view_channel and permissions.send_messages and permissions.embed_links):
+        can_send = permissions.send_messages_in_threads if isinstance(channel, discord.Thread) else permissions.send_messages
+        if not (permissions.view_channel and can_send and permissions.embed_links):
             raise UserError("Боту нужны права просмотра канала, отправки сообщений и вставки ссылок.")
         return channel
 
@@ -98,10 +100,21 @@ class EventService:
         return content
 
     async def update_cancelled(self, guild: discord.Guild, report: dict) -> bool:
-        if not report["message_id"]:
+        barn = 'barn_amount' in report
+        if not report["message_id"] and not barn:
             return False
         try:
-            channel = await self.channel(guild, report["channel_id"])
+            channel = await self.channel(guild, report["channel_id"], allow_thread=barn)
+            if not report['message_id']:
+                # Старые карточки коровника не сохраняли ID. Ищем только пост этого бота с точным номером.
+                title = f"🐄 Коровник — сбор #{report['id']}"
+                async for message in channel.history(limit=None):
+                    if message.author.id == guild.me.id and message.embeds and message.embeds[0].title in (title, title+' — отменён'):
+                        report['message_id'] = str(message.id)
+                        await database_call(self.store, 'attach_message', report['guild_id'], report['id'], report['message_id'])
+                        break
+                if not report['message_id']:
+                    return False
             await channel.get_partial_message(int(report["message_id"])).edit(
                 embed=report_embed(report), allowed_mentions=discord.AllowedMentions.none(),
             )

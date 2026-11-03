@@ -22,6 +22,7 @@ class PriceSubscriptionView(discord.ui.View):
         self.default_mode = 'max'
         self.scope_item = '*'
         self.finished = False
+        self.needs_refresh = False
         self.lock = asyncio.Lock()
         self.expires_at = time.monotonic() + 600
         # Один список Discord вмещает до 25 вариантов; сейчас товаров 20.
@@ -74,17 +75,36 @@ class PriceSubscriptionView(discord.ui.View):
         self.finished = True
         self.stop()
 
+    def selection_snapshot(self):
+        return self.selected.copy(), self.modes.copy(), self.default_mode, self.scope_item
+
+    async def show_selection(self, interaction, previous):
+        def sync_menus():
+            for option in self.selector.options:
+                option.default = option.value in self.selected
+            for option in self.scope_selector.options:
+                option.default = option.value == self.scope_item
+            self.mode_selector.placeholder = '3 · Режим для: ' + ('все выбранные товары' if self.scope_item == '*' else self.scope_item)
+        sync_menus()
+        try:
+            await interaction.response.edit_message(content=self.prompt(), view=self,
+                                                    allowed_mentions=discord.AllowedMentions.none())
+        except BaseException:
+            self.selected, self.modes, self.default_mode, self.scope_item = previous
+            sync_menus()
+            self.needs_refresh = True
+            raise
+        self.needs_refresh = False
+
     async def choose(self, interaction, values):
         async with self.lock:
             self.check_owner(interaction)
             if not set(values).issubset(LIMITS):
                 raise UserError('Выберите товары из списка.')
+            previous = self.selection_snapshot()
             self.selected = set(values)
             self.modes = {item: self.modes.get(item, self.default_mode) for item in self.selected}
-            for option in self.selector.options:
-                option.default = option.value in self.selected
-            await interaction.response.edit_message(content=self.prompt(), view=self,
-                                                    allowed_mentions=discord.AllowedMentions.none())
+            await self.show_selection(interaction, previous)
 
     @discord.ui.select(placeholder='1 · Выберите товары для уведомлений', min_values=0, max_values=1, row=0)
     async def selector(self, interaction, select):
@@ -98,6 +118,12 @@ class PriceSubscriptionView(discord.ui.View):
         async with self.lock:
             self.check_owner(interaction)
             await interaction.response.defer()
+            if self.needs_refresh:
+                # Не записываем выбор, пока пользователь не увидит состояние после сбоя.
+                await interaction.edit_original_response(content=self.prompt(), view=self,
+                                                         allowed_mentions=discord.AllowedMentions.none())
+                self.needs_refresh = False
+                return
             settings = None
             if self.selected:
                 # Канал и права могут измениться после открытия меню: перепроверяем перед записью.
@@ -142,11 +168,9 @@ class PriceSubscriptionView(discord.ui.View):
     async def scope_selector(self, interaction, select):
         async with self.lock:
             self.check_owner(interaction)
+            previous = self.selection_snapshot()
             self.scope_item = select.values[0]
-            for option in self.scope_selector.options:
-                option.default = option.value == self.scope_item
-            self.mode_selector.placeholder = '3 · Режим для: ' + ('все выбранные товары' if self.scope_item == '*' else self.scope_item)
-            await interaction.response.edit_message(content=self.prompt(), view=self)
+            await self.show_selection(interaction, previous)
 
     @discord.ui.select(placeholder='3 · Выберите режим цены для указанной области', row=2,
                        options=[discord.SelectOption(label='95 - 100', value='near'),
@@ -159,6 +183,7 @@ class PriceSubscriptionView(discord.ui.View):
             self.check_owner(interaction)
             if mode not in MODE_LABELS:
                 raise UserError('Выберите режим из списка.')
+            previous = self.selection_snapshot()
             if self.scope_item == '*':
                 self.default_mode = mode
                 self.modes = {item: mode for item in self.selected}
@@ -166,5 +191,4 @@ class PriceSubscriptionView(discord.ui.View):
                 self.modes[self.scope_item] = mode
             else:
                 raise UserError('Сначала добавьте этот товар в список отслеживания.')
-            await interaction.response.edit_message(content=self.prompt(), view=self,
-                                                     allowed_mentions=discord.AllowedMentions.none())
+            await self.show_selection(interaction, previous)

@@ -54,6 +54,7 @@ class EventCommands(app_commands.Group):
         await interaction.response.defer(thinking=True)
         await require_access_async(interaction, self.service.store, "organizer")
         guild_id = str(interaction.guild_id)
+        await database_call(self.service.store, 'ensure_channel_separation', guild_id, str(interaction.channel_id))
         settings = await database_call(self.service.store, "settings", guild_id)
         if not settings:
             raise UserError("Сначала администратор должен выполнить /бот настройки.")

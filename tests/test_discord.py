@@ -127,7 +127,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
             bot.tree.sync = AsyncMock(return_value=[])
             with patch.object(bot, "add_view") as add_view:
                 await bot.setup_hook()
-                self.assertEqual(add_view.call_count, 2)
+                self.assertEqual(add_view.call_count, 3)
             bot.tree.sync.assert_awaited_once_with(guild=discord.Object(id=int(GUILD)))
             await bot.on_ready()
             await bot.on_ready()

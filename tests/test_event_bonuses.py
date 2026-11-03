@@ -104,7 +104,7 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         self.commands=EventCommands(self.service)
 
     def interaction(self,role='organizer'):
-        return SimpleNamespace(guild_id=int(G),user=SimpleNamespace(id=int(A),roles=[SimpleNamespace(id=role)]),guild=SimpleNamespace(),channel=SimpleNamespace(get_partial_message=MagicMock(return_value=SimpleNamespace(edit=AsyncMock()))),permissions=discord.Permissions.none(),response=SimpleNamespace(defer=AsyncMock()),edit_original_response=AsyncMock())
+        return SimpleNamespace(guild_id=int(G),channel_id=int(C),user=SimpleNamespace(id=int(A),roles=[SimpleNamespace(id=role)]),guild=SimpleNamespace(),channel=SimpleNamespace(get_partial_message=MagicMock(return_value=SimpleNamespace(edit=AsyncMock()))),permissions=discord.Permissions.none(),response=SimpleNamespace(defer=AsyncMock()),edit_original_response=AsyncMock())
 
     async def test_only_manager_updates_type_and_preserves_id(self):
         with self.assertRaises(UserError):

@@ -1,4 +1,4 @@
-"""Автоматическая публикация сравнения. Исходное сообщение всегда сохраняется."""
+"""Сравнение цен и очистка выделенного канала после успешной публикации."""
 import asyncio
 import hashlib
 import json
@@ -94,6 +94,9 @@ class PriceService:
             try:
                 result = await message.channel.send(**payload)
             except Exception as error:
+                if isinstance(error, discord.HTTPException) and 400 <= error.status < 500 and error.status != 408:
+                    await database_call(self.store, 'release_failed_price_publication', guild_id, source_id)
+                    raise UserError('Discord отклонил публикацию сравнения. Исправьте права или параметры и повторите /скупщик обработать. Исходник сохранён.') from error
                 await database_call(self.store, 'uncertain_price_publication', guild_id, source_id)
                 log_error('Не подтверждена публикация сравнения цен; исходник сохранён', error)
                 raise UserError('Отправка сравнения не подтверждена. Исходное сообщение сохранено; повтор не выполняется во избежание дублей.') from error
@@ -105,6 +108,11 @@ class PriceService:
 
     async def cleanup_channel(self, source):
         # Удаление возможно только после сохранения успешной публикации.
+        try:
+            await database_call(self.store, 'ensure_channel_separation', str(self.guild_id), str(source.channel.id), 'prices')
+        except UserError:
+            logger.warning('Очистка цен отключена: канал используется другим модулем. Перенастройте каналы.')
+            return
         permissions = source.channel.permissions_for(source.guild.me)
         if not getattr(permissions, 'manage_messages', False) or not getattr(permissions, 'read_message_history', False):
             logger.warning('Очистка канала цен: нужны права управления сообщениями и чтения истории')
@@ -113,11 +121,18 @@ class PriceService:
         if not latest or int(latest['source_id']) != source.id:
             return  # Ручная обработка старого отчёта не удаляет свежие цены.
         keep = {int(latest['source_id']), int(latest['result_id'])}
+        known = await database_call(self.store, 'price_message_ids', str(self.guild_id), str(source.channel.id))
+        bot_id = self.client.user.id if self.client and self.client.user else None
         try:
             # Не затрагиваем сообщения, пришедшие во время обработки новой сводки.
             async for message in source.channel.history(limit=None):
                 if message.id in keep or message.pinned:
                     continue
+                if bot_id is not None and getattr(getattr(message, 'author', None), 'id', None) == bot_id and str(message.id) not in known:
+                    notice_source = (getattr(message, 'content', '') or '').split('/')[-1]
+                    if not (notice_source.isascii() and notice_source.isdigit() and is_current_price_notice(
+                            message,bot_id,self.guild_id,source.channel.id,notice_source)):
+                        continue  # Исторические карточки других модулей тоже сохраняются.
                 if is_current_price_notice(message, self.client.user.id if self.client and self.client.user else None,
                                            self.guild_id, source.channel.id, latest['source_id']):
                     continue

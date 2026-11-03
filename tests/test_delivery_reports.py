@@ -36,8 +36,10 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
         self.channel.id = 3
         self.channel.send = AsyncMock(return_value=SimpleNamespace(id=900))
         self.guild = SimpleNamespace(id=1, me=object(), get_member=self.members.get,
+                                    fetch_member=AsyncMock(side_effect=self.members.get),
                                     fetch_channel=AsyncMock(return_value=self.channel))
-        self.message = SimpleNamespace(id=100, guild=self.guild, channel=SimpleNamespace(id=2, send=AsyncMock()))
+        self.message = SimpleNamespace(id=100, guild=self.guild, channel=SimpleNamespace(id=2, send=AsyncMock(),
+            permissions_for=lambda member:SimpleNamespace(view_channel=True)))
         self.client = discord.Client(intents=discord.Intents.none())
         self.addAsyncCleanup(self.client.close)
         self.tree = discord.app_commands.CommandTree(self.client)
@@ -158,7 +160,8 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.price_settings('1')['channel_id'],'2')
 
     async def test_no_admin_post_when_channels_collide(self):
-        self.store.configure_admin_report_channel('1','99','2')
+        # Прежняя некорректная конфигурация: новые setters такое уже запрещают.
+        self.store.db.execute("INSERT INTO admin_report_settings VALUES ('1','2')")
         await notify_maximum_prices(self.store,self.message,self.report)
         self.channel.send.assert_not_awaited()
         self.assertEqual(self.data()['daily'][0]['sent'],3)

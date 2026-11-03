@@ -18,6 +18,7 @@ class BackupStore:
     def configure_database_backups(self, guild_id, actor_id, channel_id, now=None):
         now = now or datetime.now(UTC)
         with self.transaction():
+            self.ensure_channel_separation(guild_id, channel_id)
             self.db.execute('''INSERT INTO database_backup_settings(guild_id,channel_id,next_at) VALUES (?,?,?)
                 ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,
                 next_at=excluded.next_at,state='idle',last_attempt=NULL''',

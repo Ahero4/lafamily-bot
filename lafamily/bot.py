@@ -20,7 +20,7 @@ from lafamily.modules.nicknames import register_nickname_command
 from lafamily.modules.prices.service import PriceService
 from lafamily.modules.prices.commands import register_price_commands
 from lafamily.modules.barn import register_barn_commands
-from lafamily.modules.onboarding import OnboardingService, EntryView, ReviewView, register_onboarding
+from lafamily.modules.onboarding import OnboardingService, EntryView, ReviewView, RecoveryView, register_onboarding
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,7 @@ class FamilyBot(discord.Client):
         # Постоянные кнопки продолжают работать после перезапуска.
         self.add_view(EntryView(self.onboarding))
         self.add_view(ReviewView(self.onboarding))
+        self.add_view(RecoveryView(self.onboarding))
         # setup_hook вызывается после авторизации, до Gateway и не повторяется при reconnect.
         # При сбое регистрации прекращаем запуск, чтобы не обслуживать устаревшую схему.
         try:

@@ -29,6 +29,7 @@ class PriceDeliveryStore:
             if channel_id is None:
                 self.db.execute('DELETE FROM admin_report_settings WHERE guild_id=?', (guild_id,))
             else:
+                self.ensure_channel_separation(guild_id, channel_id)
                 self.db.execute('INSERT INTO admin_report_settings VALUES (?,?) ON CONFLICT(guild_id) '
                                 'DO UPDATE SET channel_id=excluded.channel_id', (guild_id, channel_id))
             self.audit(guild_id, actor_id, 'admin.report.channel', {'channel_id': channel_id})

@@ -20,13 +20,13 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         self.store = Store(':memory:')
         self.addCleanup(self.store.close)
         self.store.set_price_subscription('1', '123', 'Медь', True)
-        self.channel = SimpleNamespace(id=2, send=AsyncMock())
+        self.channel = SimpleNamespace(id=2, send=AsyncMock(), permissions_for=lambda member: SimpleNamespace(view_channel=True))
         self.dm = SimpleNamespace(send=AsyncMock())
         self.members = {}
         def get_member(user_id):
             return self.members.setdefault(user_id, SimpleNamespace(id=user_id, send=AsyncMock(wraps=self.dm.send)))
         self.message = SimpleNamespace(id=100, guild=SimpleNamespace(id=1, get_member=get_member,
-            fetch_member=AsyncMock()), channel=self.channel)
+            fetch_member=AsyncMock(side_effect=get_member)), channel=self.channel)
         self.high = parse_prices(EXAMPLE.replace('- Медь: $36 ($43)', '- Медь: $60 ($72)'))
         self.low = parse_prices(EXAMPLE)
 
@@ -154,6 +154,7 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_uncached_member_is_fetched(self):
         self.message.guild.get_member = lambda user_id: None
+        self.message.guild.fetch_member.side_effect = None
         self.message.guild.fetch_member.return_value = self.dm
         await notify_maximum_prices(self.store, self.message, self.high)
         self.message.guild.fetch_member.assert_awaited_once_with(123)

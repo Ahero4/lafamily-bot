@@ -18,7 +18,7 @@ def register_price_commands(tree, service, guild_id):
     @group.command(name='настройки', description='Выбрать канал для сравнения цен скупщиков', extras={'access': 'manager'})
     @app_commands.guild_only()
     @app_commands.rename(channel='канал')
-    @app_commands.describe(channel='Исходные сообщения остаются; сравнение публикуется в этом же канале')
+    @app_commands.describe(channel='Канал цен: текущий исходник и сводка остаются, старые и посторонние сообщения удаляются')
     async def settings(interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction, service.store, 'manager')
@@ -32,7 +32,7 @@ def register_price_commands(tree, service, guild_id):
             raise UserError('Канал цен должен отличаться от канала админских отчётов.')
         await database_call(service.store, 'configure_prices', str(interaction.guild_id), str(interaction.user.id), str(channel.id))
         await interaction.edit_original_response(content=f'Канал цен: <#{channel.id}>. Новые полные отчёты будут обработаны автоматически. '
-            'Исходные сообщения остаются, сравнение публикуется рядом. Для уже опубликованного отчёта используйте /скупщик обработать.')
+            'Текущий исходник и сводка сохраняются; старые и посторонние сообщения удаляются. Для уже опубликованного отчёта используйте /скупщик обработать.')
 
     @group.command(name='обработать', description='Сравнить цены из существующего сообщения по его ID', extras={'access': 'manager'})
     @app_commands.guild_only()
@@ -59,7 +59,7 @@ def register_price_commands(tree, service, guild_id):
         answers = {'published': 'Сравнение опубликовано. Исходное сообщение сохранено.',
                    'updated': 'Сравнение обновлено. Исходное сообщение сохранено.',
                    'already_done': 'Это сообщение уже обработано, повторной публикации не будет.',
-                   'unrecognized': 'Не удалось распознать полный отчёт: нужны все товары трёх скупщиков и раздел продуктов. Исходник не изменён.',
+                   'unrecognized': 'Не удалось распознать полный отчёт: нужны все товары трёх скупщиков и раздел продуктов. Нераспознанное незакреплённое сообщение может быть удалено очисткой канала.',
                    'ignored': 'Это сообщение не подходит для обработки в настроенном канале.'}
         await interaction.edit_original_response(content=answers[status])
 

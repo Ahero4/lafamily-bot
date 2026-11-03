@@ -88,6 +88,7 @@ class ReleaseUpdates:
                 if not settings:
                     return
                 channel = await self.client.fetch_channel(int(settings['channel_id']))
+                await database_call(self.store, 'ensure_channel_separation', str(self.guild_id), settings['channel_id'])
                 if channel.guild.id != self.guild_id:
                     raise UserError('Канал обновлений принадлежит другому серверу.')
                 check_channel(channel, channel.guild)

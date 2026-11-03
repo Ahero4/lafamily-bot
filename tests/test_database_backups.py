@@ -135,7 +135,8 @@ class BackupTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(UserError):
             await self.service.configure(self.interaction(),self.channel)
         self.channel.permissions_for.return_value.attach_files=True
-        await self.worker.call('configure_prices',G,A,C)
+        self.channel.id = int(C)+1
+        await self.worker.call('configure_prices',G,A,str(self.channel.id))
         with self.assertRaises(UserError):
             await self.service.configure(self.interaction(),self.channel)
 

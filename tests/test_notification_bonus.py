@@ -17,6 +17,8 @@ class NotificationBonusTests(unittest.IsolatedAsyncioTestCase):
         message=SimpleNamespace(id=100,guild=SimpleNamespace(id=1),channel=SimpleNamespace(id=2,send=AsyncMock()))
         dm=SimpleNamespace(send=AsyncMock())
         message.guild.get_member=lambda user_id: dm
+        message.guild.fetch_member=AsyncMock(return_value=dm)
+        message.channel.permissions_for=lambda member:SimpleNamespace(view_channel=True)
         await notify_maximum_prices(store,message,report)
         self.assertEqual(dm.send.await_count,2)
         for call in dm.send.call_args_list:

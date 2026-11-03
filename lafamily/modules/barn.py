@@ -9,6 +9,7 @@ from discord import app_commands
 from lafamily.async_database import database_call
 from lafamily.errors import UserError
 from lafamily.permissions import require_access_async
+from lafamily.modules.events.ui import report_embed
 
 
 def parse_amount(value: str) -> int:
@@ -53,10 +54,9 @@ def register_barn_commands(tree, store, guild_id):
         report = await database_call(store, 'create_barn_collection', str(interaction.guild_id),
             str(interaction.user.id), str(recipient.id), str(interaction.channel_id),
             f'barn:{interaction.id}', total)
-        embed = discord.Embed(title=f'🐄 Коровник — сбор #{report["id"]}', colour=0x43B581)
-        embed.add_field(name='Собрал', value=f'<@{recipient.id}>')
-        embed.add_field(name='Сумма', value=f'${total:,}'.replace(',', ' '))
-        embed.add_field(name='Начислено', value=f'{report["points"]} балл.')
-        embed.set_footer(text='Баллы учтены в общей статистике. Ошибка? Обратитесь к руководству с номером сбора.')
         # Начисление уже сохранено: при сбое ответа повторно подавать сбор не требуется.
-        await interaction.edit_original_response(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        message = await interaction.edit_original_response(embed=report_embed(report), allowed_mentions=discord.AllowedMentions.none())
+        await database_call(store, 'attach_message', str(interaction.guild_id), report['id'], str(message.id))
+        latest = await database_call(store, 'report', str(interaction.guild_id), report['id'])
+        if latest['cancelled_at']:
+            await message.edit(embed=report_embed(latest), allowed_mentions=discord.AllowedMentions.none())

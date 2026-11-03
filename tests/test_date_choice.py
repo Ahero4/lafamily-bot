@@ -42,7 +42,7 @@ class DateChoiceTests(unittest.IsolatedAsyncioTestCase):
         self.store.set_type(guild, actor, "МП", 10)
         kind = self.store.types(guild)[0]
         interaction = SimpleNamespace(
-            guild_id=int(guild), guild=SimpleNamespace(), user=SimpleNamespace(id=int(actor)),
+            guild_id=int(guild), channel_id=int(channel), guild=SimpleNamespace(), user=SimpleNamespace(id=int(actor)),
             permissions=discord.Permissions(administrator=True),
             channel=SimpleNamespace(get_partial_message=lambda message_id: SimpleNamespace(edit=AsyncMock())),
             response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock(),

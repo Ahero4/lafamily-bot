@@ -11,9 +11,11 @@ from lafamily.modules.events.models import Draft
 from lafamily.modules.events.time import timestamp
 from lafamily.price_delivery_store import PriceDeliveryStore
 from lafamily.backup_store import BackupStore
+from lafamily.channel_store import ChannelStore
+from lafamily.onboarding_store import OnboardingStore
 
 
-class Store(PriceDeliveryStore, BackupStore):
+class Store(PriceDeliveryStore, BackupStore, ChannelStore, OnboardingStore):
     def __init__(self, path: str | Path):
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -108,6 +110,7 @@ class Store(PriceDeliveryStore, BackupStore):
         """)
         self.init_database_backups()
         self.init_price_delivery()
+        self.init_onboarding()
         self.migrate_event_bonuses()
         # Старые подписки сохраняют прежний режим и защиту от повторных тегов.
         if 'threshold' not in {r['name'] for r in self.db.execute('PRAGMA table_info(price_subscriptions)')}:
@@ -173,6 +176,7 @@ class Store(PriceDeliveryStore, BackupStore):
         if guild_id in organizers or guild_id in managers:
             raise UserError("Нельзя назначить @everyone управляющей ролью.")
         with self.transaction():
+            self.ensure_channel_separation(guild_id, channel_id)
             self.db.execute("""INSERT INTO settings VALUES (?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id,
                 organizer_role_id=excluded.organizer_role_id, manager_role_id=excluded.manager_role_id""",
@@ -273,6 +277,9 @@ class Store(PriceDeliveryStore, BackupStore):
         report = dict(row)
         report["members"] = [row["user_id"] for row in self.db.execute(
             "SELECT user_id FROM report_members WHERE report_id=? ORDER BY user_id", (report_id,))]
+        barn = self.db.execute('SELECT amount FROM barn_collections WHERE report_id=?', (report_id,)).fetchone()
+        if barn:
+            report['barn_amount'] = barn['amount']
         return report
 
     def attach_message(self, guild_id: str, report_id: int, message_id: str):
@@ -312,35 +319,6 @@ class Store(PriceDeliveryStore, BackupStore):
             LIMIT ? OFFSET ?""", (*period, guild_id, limit, offset))
         return [dict(row) for row in rows]
 
-    def onboarding_settings(self, guild_id):
-        row = self.db.execute('SELECT * FROM onboarding_settings WHERE guild_id=?', (guild_id,)).fetchone()
-        return dict(row) if row else None
-
-    def configure_onboarding(self, guild_id, entry_id, review_id, role_id):
-        self.db.execute('INSERT OR REPLACE INTO onboarding_settings VALUES (?, ?, ?, ?)', (guild_id, entry_id, review_id, role_id))
-
-    def onboarding_request(self, message_id):
-        row = self.db.execute('SELECT * FROM onboarding_requests WHERE message_id=?', (message_id,)).fetchone()
-        return dict(row) if row else None
-
-    def save_onboarding_request(self, message_id, guild_id, user_id, role_id):
-        self.db.execute('INSERT INTO onboarding_requests VALUES (?, ?, ?, ?, 0)', (message_id, guild_id, user_id, role_id))
-
-    def reject_onboarding(self, message_id, actor_id, reason):
-        # Значения: 0 — ожидает, 1 — утверждена, -1 — отклонена. Старые записи совместимы.
-        with self.transaction():
-            row = self.onboarding_request(message_id)
-            if not row or row['approved']:
-                raise UserError('Заявка уже обработана или не найдена.')
-            self.db.execute('UPDATE onboarding_requests SET approved=-1 WHERE message_id=?', (message_id,))
-            self.audit(row['guild_id'], actor_id, 'onboarding.rejected', {'message_id': message_id, 'reason': reason})
-
-    def approve_onboarding(self, message_id, actor_id):
-        with self.transaction():
-            self.db.execute('UPDATE onboarding_requests SET approved=1 WHERE message_id=?', (message_id,))
-            row = self.onboarding_request(message_id)
-            self.audit(row['guild_id'], actor_id, 'onboarding.approved', row)
-
     def configure_barn(self, guild_id: str, actor_id: str, points: int):
         self.validate_points(points)
         with self.transaction():
@@ -357,6 +335,7 @@ class Store(PriceDeliveryStore, BackupStore):
             existing = self.db.execute('SELECT id FROM reports WHERE guild_id=? AND request_id=?', (guild_id, request_id)).fetchone()
             if existing:
                 return self.report(guild_id, existing['id'])
+            self.ensure_channel_separation(guild_id, channel_id)
             settings = self.db.execute('SELECT points FROM barn_settings WHERE guild_id=?', (guild_id,)).fetchone()
             if not settings:
                 raise UserError('Администратору нужно сначала выполнить /коровник настройки и задать баллы за сбор.')
@@ -377,6 +356,7 @@ class Store(PriceDeliveryStore, BackupStore):
 
     def configure_prices(self, guild_id: str, actor_id: str, channel_id: str):
         with self.transaction():
+            self.ensure_channel_separation(guild_id, channel_id, 'prices')
             self.db.execute("""INSERT INTO price_settings VALUES (?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id""", (guild_id, channel_id))
             self.audit(guild_id, actor_id, "prices.settings.updated", {"channel_id": channel_id})
@@ -388,6 +368,10 @@ class Store(PriceDeliveryStore, BackupStore):
     def price_publication(self, guild_id: str, source_id: str) -> dict | None:
         row = self.db.execute("SELECT * FROM price_publications WHERE guild_id=? AND source_id=?", (guild_id, source_id)).fetchone()
         return dict(row) if row else None
+
+    def price_message_ids(self, guild_id, channel_id):
+        return {value for row in self.db.execute('SELECT source_id,result_id FROM price_publications WHERE guild_id=? AND channel_id=?',
+                (guild_id,channel_id)) for value in row if value is not None}
 
     def claim_price_publication(self, guild_id: str, channel_id: str, source_id: str, fingerprint: str) -> bool:
         # Запись до отправки защищает от повторной публикации после перезапуска или неоднозначного сбоя.
@@ -401,6 +385,10 @@ class Store(PriceDeliveryStore, BackupStore):
 
     def uncertain_price_publication(self, guild_id: str, source_id: str):
         self.db.execute("UPDATE price_publications SET state='uncertain' WHERE guild_id=? AND source_id=?", (guild_id, source_id))
+
+    def release_failed_price_publication(self, guild_id, source_id):
+        # Только подтверждённый отказ Discord позволяет безопасно повторить отправку.
+        self.db.execute("DELETE FROM price_publications WHERE guild_id=? AND source_id=? AND state='pending'", (guild_id,source_id))
 
     def price_subscriptions(self, guild_id: str, user_id: str):
         return [row['item'] for row in self.db.execute(
@@ -471,6 +459,7 @@ class Store(PriceDeliveryStore, BackupStore):
 
     def configure_release_channel(self, guild_id, actor_id, channel_id):
         with self.transaction():
+            self.ensure_channel_separation(guild_id, channel_id)
             self.db.execute('INSERT INTO release_settings VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id', (guild_id, channel_id))
             self.audit(guild_id, actor_id, 'release.channel.updated', {'channel_id': channel_id})
 
@@ -512,7 +501,9 @@ class Store(PriceDeliveryStore, BackupStore):
         return dict(row) if row else None
 
     def configure_announcement_storage(self, guild_id, channel_id):
-        self.db.execute('INSERT INTO announcement_settings VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id', (guild_id,channel_id))
+        with self.transaction():
+            self.ensure_channel_separation(guild_id, channel_id)
+            self.db.execute('INSERT INTO announcement_settings VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET channel_id=excluded.channel_id', (guild_id,channel_id))
 
     def announcement_template(self, guild_id, number):
         row = self.db.execute('SELECT * FROM announcement_templates WHERE guild_id=? AND id=?', (guild_id,number)).fetchone()
@@ -523,6 +514,7 @@ class Store(PriceDeliveryStore, BackupStore):
 
     def save_announcement_template(self, guild_id, name, channel_id, role_id, body, image_ref=None, clear_image=False):
         with self.transaction():
+            self.ensure_channel_separation(guild_id, channel_id)
             self.db.execute("""INSERT INTO announcement_templates(guild_id,name,channel_id,role_id,body,image_ref)
                 VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id,name) DO UPDATE SET
                 channel_id=excluded.channel_id, role_id=excluded.role_id, body=excluded.body,

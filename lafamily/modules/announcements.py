@@ -107,6 +107,7 @@ class AnnouncementService:
         setting = await database_call(self.store, 'announcement_storage', str(self.guild_id))
         if not setting:
             raise UserError('Сначала задайте служебный канал: /анонс настройки хранилище.')
+        await database_call(self.store, 'ensure_channel_separation', str(self.guild_id), setting['channel_id'])
         channel = await self.client.fetch_channel(int(setting['channel_id']))
         permissions = text_channel(channel, self.guild_id, history=True)
         if not permissions.attach_files:
@@ -140,6 +141,7 @@ class AnnouncementService:
             for row in rows:
                 for start in due_occurrences(row, now):
                     try:
+                        await database_call(self.store, 'ensure_channel_separation', str(self.guild_id), row['channel_id'])
                         if await database_call(self.store, 'announcement_attempt', row['id'], timestamp(start)):
                             continue
                         channel = await self.client.fetch_channel(int(row['channel_id']))

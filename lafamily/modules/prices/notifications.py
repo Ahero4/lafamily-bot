@@ -54,15 +54,17 @@ async def notify_maximum_prices(store, message, report):
             sending = False
             state, error_type = 'sent', None
             try:
-                member = message.guild.get_member(int(user))
-                if member is None:
-                    member = await message.guild.fetch_member(int(user))
-                sending = True
-                await member.send(
-                    content=f'🏆 **{item}: ${price}{bonus}** — {reason} '
-                            f'Скупщик: **{places}**.\n'
-                            f'https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}',
-                    allowed_mentions=discord.AllowedMentions.none())
+                # Кэш без Members Intent может содержать прежние роли участника.
+                member = await message.guild.fetch_member(int(user))
+                if not message.channel.permissions_for(member).view_channel:
+                    state, error_type = 'forbidden', 'ChannelAccessDenied'
+                else:
+                    sending = True
+                    await member.send(
+                        content=f'🏆 **{item}: ${price}{bonus}** — {reason} '
+                                f'Скупщик: **{places}**.\n'
+                                f'https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}',
+                        allowed_mentions=discord.AllowedMentions.none())
             except Exception as error:
                 # Включая закрытые DM, уход с сервера, HTTP- и сетевые ошибки.
                 # Публичного запасного уведомления нет; подписка сохраняется.
