@@ -112,7 +112,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         embed = payload['embed']
         self.assertIn('<#777777777777777777>', embed.description)
         text = '\n'.join(field.value for field in embed.fields)
-        for word in ('/скупщик-уведомление', 'Подтвердить', 'Отмена', '95–100%', '90–95%', 'Ручная обработка не тегает'):
+        for word in ('/скупщик-уведомление', 'Подтвердить', 'Отмена', '95–100%', '90–95%', 'Ручная обработка не уведомляет'):
             self.assertIn(word, text)
         self.assertLessEqual(len(embed), 6000)
         self.assertTrue(all(len(field.value) <= 1024 for field in embed.fields))

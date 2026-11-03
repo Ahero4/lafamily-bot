@@ -21,29 +21,35 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.store.close)
         self.store.set_price_subscription('1', '123', 'Медь', True)
         self.channel = SimpleNamespace(id=2, send=AsyncMock())
-        self.message = SimpleNamespace(id=100, guild=SimpleNamespace(id=1), channel=self.channel)
+        self.dm = SimpleNamespace(send=AsyncMock())
+        self.members = {}
+        def get_member(user_id):
+            return self.members.setdefault(user_id, SimpleNamespace(id=user_id, send=AsyncMock(wraps=self.dm.send)))
+        self.message = SimpleNamespace(id=100, guild=SimpleNamespace(id=1, get_member=get_member,
+            fetch_member=AsyncMock()), channel=self.channel)
         self.high = parse_prices(EXAMPLE.replace('- Медь: $36 ($43)', '- Медь: $60 ($72)'))
         self.low = parse_prices(EXAMPLE)
 
     async def test_maximum_repeat_reset_and_older_report(self):
         await notify_maximum_prices(self.store, self.message, self.high)
-        self.channel.send.assert_awaited_once()
-        payload = self.channel.send.call_args.kwargs
-        self.assertIn('<@123>', payload['content'])
+        self.dm.send.assert_awaited_once()
+        payload = self.dm.send.call_args.kwargs
+        self.members[123].send.assert_awaited_once()
+        self.channel.send.assert_not_awaited()
         self.assertIn('Медь: $60', payload['content'])
-        self.assertEqual(payload['allowed_mentions'].to_dict()['users'], [123])
+        self.assertEqual(payload['allowed_mentions'].to_dict(), discord.AllowedMentions.none().to_dict())
         self.message.id = 101
         await notify_maximum_prices(self.store, self.message, self.high)
         self.message.id = 99
         await notify_maximum_prices(self.store, self.message, self.low)
         self.message.id = 102
         await notify_maximum_prices(self.store, self.message, self.high)
-        self.assertEqual(self.channel.send.await_count, 1)
+        self.assertEqual(self.dm.send.await_count, 1)
         self.message.id = 103
         await notify_maximum_prices(self.store, self.message, self.low)
         self.message.id = 104
         await notify_maximum_prices(self.store, self.message, self.high)
-        self.assertEqual(self.channel.send.await_count, 2)
+        self.assertEqual(self.dm.send.await_count, 2)
 
     async def test_duplicate_subscribe_unsubscribe_and_guild_isolation(self):
         await notify_maximum_prices(self.store, self.message, self.high)
@@ -51,25 +57,24 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         self.store.set_price_subscription('other', '456', 'Медь', True)
         self.message.id = 101
         await notify_maximum_prices(self.store, self.message, self.high)
-        self.assertEqual(self.channel.send.await_count, 1)
+        self.assertEqual(self.dm.send.await_count, 1)
         self.assertEqual(self.store.set_price_subscription('1', '123', 'Медь', False), [])
         self.assertEqual(self.store.claim_price_alerts('1', '102', []), [])
         self.assertEqual(self.store.claim_price_alerts('1', '103', ['Медь']), [])
 
     async def test_failed_send_is_not_automatically_repeated(self):
-        self.channel.send.side_effect = RuntimeError('ambiguous send')
-        with self.assertRaises(RuntimeError):
-            await notify_maximum_prices(self.store, self.message, self.high)
+        self.dm.send.side_effect = RuntimeError('ambiguous send')
+        await notify_maximum_prices(self.store, self.message, self.high)
         self.message.id = 101
         await notify_maximum_prices(self.store, self.message, self.high)
-        self.assertEqual(self.channel.send.await_count, 1)
+        self.assertEqual(self.dm.send.await_count, 1)
 
     async def test_products_and_exact_threshold(self):
         self.store.set_price_subscription('1', '123', 'Капуста', True)
         report = parse_prices(EXAMPLE.replace('- Капуста: $720', '- Капуста: $748'))
         await notify_maximum_prices(self.store, self.message, report)
-        self.channel.send.assert_awaited_once()
-        self.assertIn('Капуста: $748', self.channel.send.call_args.kwargs['content'])
+        self.dm.send.assert_awaited_once()
+        self.assertIn('Капуста: $748', self.dm.send.call_args.kwargs['content'])
 
     def test_subscription_and_state_survive_reopening_database(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -108,28 +113,52 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(service, 'require_channel'), patch.object(service, 'cleanup_channel', new=AsyncMock()):
             self.assertEqual(await service.process(self.message, notify=False), 'published')
             self.assertEqual(self.channel.send.await_count, 1)
+            self.dm.send.assert_not_awaited()
             self.message.id = 101
             self.assertEqual(await service.process(self.message), 'published')
-            self.assertEqual(self.channel.send.await_count, 3)
+            self.assertEqual(self.channel.send.await_count, 2)
+            self.assertEqual(self.dm.send.await_count, 1)
             self.message.id = 102
             self.assertEqual(await service.process(self.message), 'published')
-            self.assertEqual(self.channel.send.await_count, 4)
+            self.assertEqual(self.channel.send.await_count, 3)
 
-    async def test_many_subscribers_are_batched_without_role_mentions(self):
+    async def test_many_subscribers_receive_individual_dms(self):
         for user in range(200, 245):
             self.store.set_price_subscription('1', str(user), 'Медь', True)
         await notify_maximum_prices(self.store, self.message, self.high)
-        self.assertEqual(self.channel.send.await_count, 3)
-        count = 0
-        for call in self.channel.send.call_args_list:
-            payload = call.kwargs
-            mentions = payload['allowed_mentions'].to_dict()
-            self.assertEqual(mentions['parse'], [])
-            self.assertLessEqual(len(mentions['users']), 20)
+        self.assertEqual(self.dm.send.await_count, 46)
+        self.channel.send.assert_not_awaited()
+        for member in self.members.values():
+            member.send.assert_awaited_once()
+            payload = member.send.call_args.kwargs
+            self.assertNotIn('<@', payload['content'])
+            self.assertEqual(payload['allowed_mentions'].to_dict(), discord.AllowedMentions.none().to_dict())
             self.assertLessEqual(len(payload['content']), 2000)
-            count += len(mentions['users'])
-        self.assertEqual(count, 46)
 
+    async def test_delivery_failures_do_not_stop_other_subscribers(self):
+        for failure in (discord.Forbidden(SimpleNamespace(status=403, reason='Forbidden'), 'closed'),
+                        discord.NotFound(SimpleNamespace(status=404, reason='Not Found'), 'left'),
+                        discord.HTTPException(SimpleNamespace(status=500, reason='Error'), 'failed'),
+                        OSError('network')):
+            with self.subTest(failure=type(failure).__name__):
+                self.store.claim_price_alerts('1', str(self.message.id + 1), [])
+                self.message.id += 2
+                self.store.set_price_subscription('1', '456', 'Медь', True)
+                self.message.guild.get_member(123).send.side_effect = failure
+                other = self.message.guild.get_member(456)
+                other.send.reset_mock()
+                await notify_maximum_prices(self.store, self.message, self.high)
+                other.send.assert_awaited_once()
+                self.channel.send.assert_not_awaited()
+                self.assertIn('Медь', self.store.price_subscription_modes('1', '123'))
+
+    async def test_uncached_member_is_fetched(self):
+        self.message.guild.get_member = lambda user_id: None
+        self.message.guild.fetch_member.return_value = self.dm
+        await notify_maximum_prices(self.store, self.message, self.high)
+        self.message.guild.fetch_member.assert_awaited_once_with(123)
+        self.dm.send.assert_awaited_once()
+        self.channel.send.assert_not_awaited()
 
     async def test_cleanup_preserves_current_pair_and_pinned_messages(self):
         self.store.claim_price_publication('1', '2', '100', 'x')
@@ -184,24 +213,24 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         def report(price):
             return parse_prices(EXAMPLE.replace('- Медь: $36 ($43)',f'- Медь: ${price} ($72)'))
         await notify_maximum_prices(self.store,self.message,report(56))
-        self.channel.send.assert_not_awaited()
+        self.dm.send.assert_not_awaited()
         self.message.id+=1
         await notify_maximum_prices(self.store,self.message,report(57))
-        self.assertEqual(self.channel.send.await_count,1)
-        self.assertIn('<@123>',self.channel.send.call_args.kwargs['content'])
-        self.assertIn('95–100%',self.channel.send.call_args.kwargs['content'])
+        self.assertEqual(self.dm.send.await_count,1)
+        self.members[123].send.assert_awaited_once()
+        self.assertIn('95–100%',self.dm.send.call_args.kwargs['content'])
         self.message.id+=1
         await notify_maximum_prices(self.store,self.message,report(60))
-        self.assertEqual(self.channel.send.await_count,2)
-        self.assertIn('<@456>',self.channel.send.call_args.kwargs['content'])
+        self.assertEqual(self.dm.send.await_count,2)
+        self.members[456].send.assert_awaited_once()
         self.message.id+=1
         await notify_maximum_prices(self.store,self.message,report(60))
-        self.assertEqual(self.channel.send.await_count,2)
+        self.assertEqual(self.dm.send.await_count,2)
         self.message.id+=1
         await notify_maximum_prices(self.store,self.message,report(56))
         self.message.id+=1
         await notify_maximum_prices(self.store,self.message,report(60))
-        self.assertEqual(self.channel.send.await_count,4)
+        self.assertEqual(self.dm.send.await_count,4)
 
     def test_mode_preserves_flags_and_survives_reopening(self):
         with tempfile.TemporaryDirectory() as folder:

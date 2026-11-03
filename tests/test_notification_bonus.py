@@ -15,15 +15,17 @@ class NotificationBonusTests(unittest.IsolatedAsyncioTestCase):
         store.replace_price_subscriptions('1','456',['Медь'],{'Медь':'near'})
         report=parse_prices(EXAMPLE.replace('- Медь: $36 ($43)','- Медь: $60 ($72)'))
         message=SimpleNamespace(id=100,guild=SimpleNamespace(id=1),channel=SimpleNamespace(id=2,send=AsyncMock()))
+        dm=SimpleNamespace(send=AsyncMock())
+        message.guild.get_member=lambda user_id: dm
         await notify_maximum_prices(store,message,report)
-        self.assertEqual(message.channel.send.await_count,2)
-        for call in message.channel.send.call_args_list:
+        self.assertEqual(dm.send.await_count,2)
+        for call in dm.send.call_args_list:
             self.assertIn('Медь: $60 ($72)',call.kwargs['content'])
             self.assertNotIn('+20%',call.kwargs['content'])
             self.assertIn('Скупщик: **№',call.kwargs['content'])
         message.id=101
         await notify_maximum_prices(store,message,report)
-        self.assertEqual(message.channel.send.await_count,2)
+        self.assertEqual(dm.send.await_count,2)
 
     def test_source_rounding_not_recalculated(self):
         report=parse_prices(EXAMPLE.replace('- Алмаз: $2903 ($3483)','- Алмаз: $3997 ($4796)'))

@@ -133,7 +133,7 @@ class PriceService:
             log_error('Не удалось завершить очистку канала цен', error)
 
     async def notify_subscribers(self, message, report):
-        # Сбой тегирования не меняет результат уже опубликованного сравнения цен.
+        # Сбой личного уведомления не меняет результат уже опубликованного сравнения цен.
         try:
             await notify_maximum_prices(self.store, message, report)
         except Exception as error:
