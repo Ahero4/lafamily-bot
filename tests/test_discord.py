@@ -150,22 +150,24 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
         try:
             commands = bot.tree.get_commands(guild=discord.Object(id=int(GUILD)))
             data = {command.name: command.to_dict(bot.tree) for command in commands}
-            self.assertEqual(set(data), {"мп", "статистика", "настройки", "помощь", "инфо", "проверка-ника", "скупщик-настройка", "скупщик-обработать", "скупщик-уведомление", "админ-отчёты", "скупщик-статистика", "статус", "коровник-сбор", "коровник-настройка", "старт", "модерация-настройки", "обновления-канал", "анонс"})
-            self.assertEqual({item["name"] for item in data["инфо"]["options"]}, {"общее", "фарм", "админам"})
-            self.assertEqual({item["name"] for item in data["старт"]["options"]}, {"участник", "администратор"})
+            self.assertEqual(set(data), {"мп", "баллы", "бот", "помощь", "команды", "инфо", "ники", "скупщик", "коровник", "старт", "заявки", "анонс"})
+            self.assertEqual({item["name"] for item in data["инфо"]["options"]}, {"общее", "фарм", "админ"})
+            self.assertEqual({item["name"] for item in data["старт"]["options"]}, {"участник", "админ"})
             event = data["мп"]["options"]
-            self.assertEqual({item["name"] for item in event}, {"отчёт", "виды", "вид-добавить", "вид-отключить", "просмотр", "отменить", "статистика", "выплата-премии"})
-            add = next(item for item in event if item["name"] == "вид-добавить")
+            self.assertEqual({item["name"] for item in event}, {"создать", "виды", "посмотреть", "отменить"})
+            kinds = next(item for item in event if item["name"] == "виды")["options"]
+            self.assertEqual({item["name"] for item in kinds}, {"список", "добавить", "отключить"})
+            add = next(item for item in kinds if item["name"] == "добавить")
             self.assertEqual([item["name"] for item in add["options"]], ["название", "очки", "очки-победы", "очки-mvp"])
             self.assertTrue(add["options"][0]["autocomplete"])
             self.assertTrue(add["options"][0]["required"])
             self.assertTrue(all(not item.get("required", False) for item in add["options"][1:]))
-            payout = next(item for item in event if item["name"] == "выплата-премии")
+            payout = next(item for item in data["баллы"]["options"] if item["name"] == "премии")
             self.assertEqual([p["name"] for p in payout["options"]], ["банк-денег", "неделя"])
             self.assertTrue(payout["options"][0]["required"])
             self.assertFalse(payout["options"][1].get("required", False))
             self.assertEqual({c["value"] for c in payout["options"][1]["choices"]}, {0, -1})
-            report = next(item for item in event if item["name"] == "отчёт")
+            report = next(item for item in event if item["name"] == "создать")
             self.assertEqual([item["name"] for item in report["options"]], ["вид", "дата", "примечание", "голосовой-канал"])
             self.assertTrue(report["options"][0]["autocomplete"])
         finally:

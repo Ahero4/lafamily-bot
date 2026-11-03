@@ -1,4 +1,5 @@
 """Команды руководства настройки канала цен и ручной обработки старого сообщения."""
+from lafamily.command_groups import command_group
 import discord
 from discord import app_commands
 
@@ -11,9 +12,10 @@ from .delivery_reports import register_delivery_commands
 
 def register_price_commands(tree, service, guild_id):
     guild = discord.Object(id=guild_id)
+    group = command_group(tree, guild_id, 'скупщик', 'Цены, подписки и история доставки')
     register_delivery_commands(tree, service, guild)
 
-    @tree.command(name='скупщик-настройка', description='Выбрать канал для сравнения цен скупщиков', guild=guild, extras={'access': 'manager'})
+    @group.command(name='настройки', description='Выбрать канал для сравнения цен скупщиков', extras={'access': 'manager'})
     @app_commands.guild_only()
     @app_commands.rename(channel='канал')
     @app_commands.describe(channel='Исходные сообщения остаются; сравнение публикуется в этом же канале')
@@ -27,9 +29,9 @@ def register_price_commands(tree, service, guild_id):
             raise UserError('Канал цен должен отличаться от канала админских отчётов.')
         await database_call(service.store, 'configure_prices', str(interaction.guild_id), str(interaction.user.id), str(channel.id))
         await interaction.edit_original_response(content=f'Канал цен: <#{channel.id}>. Новые полные отчёты будут обработаны автоматически. '
-            'Исходные сообщения остаются, сравнение публикуется рядом. Для уже опубликованного отчёта используйте /скупщик-обработать.')
+            'Исходные сообщения остаются, сравнение публикуется рядом. Для уже опубликованного отчёта используйте /скупщик обработать.')
 
-    @tree.command(name='скупщик-обработать', description='Сравнить цены из существующего сообщения по его ID', guild=guild, extras={'access': 'manager'})
+    @group.command(name='обработать', description='Сравнить цены из существующего сообщения по его ID', extras={'access': 'manager'})
     @app_commands.guild_only()
     @app_commands.rename(message_id='сообщение')
     @app_commands.describe(message_id='ID исходного сообщения в настроенном канале цен')
@@ -41,7 +43,7 @@ def register_price_commands(tree, service, guild_id):
             raise UserError('Укажите ID сообщения (17–20 цифр). Его можно скопировать через меню сообщения в режиме разработчика Discord.')
         settings = await database_call(service.store, 'price_settings', str(interaction.guild_id))
         if not settings:
-            raise UserError('Сначала выполните /скупщик-настройка и выберите канал.')
+            raise UserError('Сначала выполните /скупщик настройки и выберите канал.')
         channel = await interaction.guild.fetch_channel(int(settings['channel_id']))
         service.require_channel(channel, interaction.guild)
         try:
@@ -59,7 +61,7 @@ def register_price_commands(tree, service, guild_id):
         await interaction.edit_original_response(content=answers[status])
 
 
-    @tree.command(name='скупщик-уведомление', description='Настроить товары и пороги для личных уведомлений о ценах', guild=guild, extras={'access': 'all'})
+    @group.command(name='подписки', description='Настроить товары и пороги для личных уведомлений о ценах', extras={'access': 'all'})
     @app_commands.guild_only()
     async def subscribe(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)

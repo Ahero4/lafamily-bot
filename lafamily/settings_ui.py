@@ -47,7 +47,7 @@ class SettingsView(discord.ui.View):
             if not self.finished:
                 self.finish()
                 try:
-                    await self.original.edit_original_response(content='Срок настройки истёк. Изменения не сохранены. Выполните /настройки заново.', view=None)
+                    await self.original.edit_original_response(content='Срок настройки истёк. Изменения не сохранены. Выполните /бот настройки заново.', view=None)
                 except Exception as error:
                     log_error('Не удалось закрыть форму настроек', error)
 
@@ -62,7 +62,7 @@ class SettingsView(discord.ui.View):
             if interaction.user.id != self.owner_id or interaction.guild_id != self.guild_id:
                 raise UserError('Эту форму может менять только открывший её администратор.')
             if self.finished or time.monotonic() >= self.expires_at:
-                raise UserError('Форма уже закрыта. Выполните /настройки заново.')
+                raise UserError('Форма уже закрыта. Выполните /бот настройки заново.')
             await require_access_async(interaction, self.service.store, 'admin')
             self.original = interaction
             if action == 'cancel':
@@ -91,7 +91,7 @@ class SettingsView(discord.ui.View):
             # Роли могли удалить после открытия формы: перед записью проверяем актуальный список.
             existing = {str(r.id) for r in await interaction.guild.fetch_roles() if not r.is_default()}
             if not set(self.organizers + self.managers).issubset(existing):
-                raise UserError('Одна из ролей удалена. Выберите актуальные роли или откройте /настройки заново.')
+                raise UserError('Одна из ролей удалена. Выберите актуальные роли или откройте /бот настройки заново.')
             await self.service.channel(interaction.guild, str(self.channel.id))
             await database_call(self.service.store, 'configure', str(self.guild_id), str(self.owner_id), str(self.channel.id), self.organizers, self.managers)
             self.finish()

@@ -1,4 +1,5 @@
 """Постоянная форма получения роли и проверка заявки администратором."""
+from lafamily.command_groups import command_group
 import asyncio
 import re
 import discord
@@ -172,7 +173,8 @@ class OnboardingService:
 
 
 def register_onboarding(tree, service, guild_id):
-    @tree.command(name='модерация-настройки', description='Настроить получение роли: канал формы, канал заявок и роль', guild=discord.Object(id=guild_id), extras={'access': 'manager'})
+    group = command_group(tree, guild_id, 'заявки', 'Вступление и выдача роли')
+    @group.command(name='настройки', description='Настроить получение роли: канал формы, канал заявок и роль', extras={'access': 'manager'})
     @app_commands.guild_only()
     @app_commands.rename(entry='начальный-чат', review='админский-чат', role='роль')
     async def settings(interaction: discord.Interaction, entry: discord.TextChannel, review: discord.TextChannel, role: discord.Role):

@@ -21,7 +21,7 @@ async def send_error(interaction: discord.Interaction, error: Exception):
     else:
         # Полный Discord HTTP-запрос может содержать секреты, поэтому его не печатаем.
         log_error("Ошибка действия", error)
-        content = "Не удалось выполнить действие. Перед повторной подачей проверьте сохранённый отчёт через /мп просмотр."
+        content = "Не удалось выполнить действие. Перед повторной подачей проверьте сохранённый отчёт через /мп посмотреть."
     try:
         if interaction.response.type == discord.InteractionResponseType.deferred_channel_message:
             await interaction.edit_original_response(content=content)

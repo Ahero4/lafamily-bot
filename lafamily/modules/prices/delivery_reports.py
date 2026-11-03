@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from lafamily.async_database import database_call
+from lafamily.command_groups import command_group
 from lafamily.diagnostics import log_error
 from lafamily.errors import UserError
 from lafamily.modules.events.time import MOSCOW, timestamp
@@ -85,8 +86,10 @@ async def send_admin_delivery_report(store, message, run_id):
 
 
 def register_delivery_commands(tree, service, guild):
-    @tree.command(name='админ-отчёты', description='Выбрать канал служебных отчётов или отключить их',
-                  guild=guild, extras={'access': 'admin'})
+    bot_group = command_group(tree, guild.id, 'бот', 'Настройки, состояние и служебные отчёты бота')
+    price_group = command_group(tree, guild.id, 'скупщик', 'Цены, подписки и история доставки')
+    @bot_group.command(name='отчёты', description='Выбрать канал служебных отчётов или отключить их',
+                  extras={'access': 'admin'})
     @app_commands.guild_only()
     @app_commands.rename(channel='канал')
     @app_commands.describe(channel='Отдельный админский канал; без параметра — отключить отчёты')
@@ -107,8 +110,8 @@ def register_delivery_commands(tree, service, guild):
                     'Админские отчёты отключены. История доставки продолжает сохраняться в БД.',
             allowed_mentions=discord.AllowedMentions.none())
 
-    @tree.command(name='скупщик-статистика', description='Динамика доставки DM по дням и CSV-выгрузка',
-                  guild=guild, extras={'access': 'admin'})
+    @price_group.command(name='статистика', description='Динамика доставки DM по дням и CSV-выгрузка',
+                  extras={'access': 'admin'})
     @app_commands.guild_only()
     @app_commands.rename(days='дней', view='вид', export='выгрузка')
     @app_commands.describe(days='Период до сегодняшнего дня включительно, по Москве (1–366)',

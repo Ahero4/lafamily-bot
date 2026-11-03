@@ -48,7 +48,11 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
             edit_original_response=AsyncMock())
 
     def command(self, name):
-        return self.tree.get_command(name, guild=discord.Object(id=1)).callback
+        parts = name.split()
+        command = self.tree.get_command(parts[0], guild=discord.Object(id=1))
+        for part in parts[1:]:
+            command = command.get_command(part)
+        return command.callback
 
     def data(self, details=True):
         return self.store.price_delivery_data('1', '2000', '2100', details)
@@ -130,27 +134,27 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_admin_commands_access_configuration_and_disable(self):
         self.interaction.permissions.administrator = False
-        for name in ('админ-отчёты','скупщик-статистика'):
+        for name in ('бот отчёты','скупщик статистика'):
             with self.assertRaises(UserError):
                 await self.command(name)(self.interaction)
         self.interaction.permissions.administrator = True
         self.channel.permissions_for.return_value = SimpleNamespace(view_channel=True,send_messages=True)
-        await self.command('админ-отчёты')(self.interaction,self.channel)
+        await self.command('бот отчёты')(self.interaction,self.channel)
         self.assertEqual(self.store.admin_report_channel('1'),'3')
-        await self.command('админ-отчёты')(self.interaction)
+        await self.command('бот отчёты')(self.interaction)
         self.assertIsNone(self.store.admin_report_channel('1'))
         self.channel.id = 2
         with self.assertRaises(UserError):
-            await self.command('админ-отчёты')(self.interaction,self.channel)
+            await self.command('бот отчёты')(self.interaction,self.channel)
         self.channel.id = 3
         self.channel.permissions_for.return_value.send_messages = False
         with self.assertRaises(UserError):
-            await self.command('админ-отчёты')(self.interaction,self.channel)
+            await self.command('бот отчёты')(self.interaction,self.channel)
 
     async def test_price_channel_cannot_replace_admin_channel(self):
         self.store.configure_admin_report_channel('1','99','3')
         with self.assertRaises(UserError):
-            await self.command('скупщик-настройка')(self.interaction,self.channel)
+            await self.command('скупщик настройки')(self.interaction,self.channel)
         self.assertEqual(self.store.price_settings('1')['channel_id'],'2')
 
     async def test_no_admin_post_when_channels_collide(self):
@@ -161,12 +165,12 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_statistics_returns_private_table_list_and_csv(self):
         await notify_maximum_prices(self.store,self.message,self.report)
-        await self.command('скупщик-статистика')(self.interaction,30,'table',True)
+        await self.command('скупщик статистика')(self.interaction,30,'table',True)
         args = self.interaction.edit_original_response.call_args.kwargs
         self.assertIn('```',args['content'])
         self.assertEqual([f.filename for f in args['attachments']], ['buyer-daily.csv','buyer-deliveries.csv'])
         self.interaction.response.defer.assert_awaited_with(ephemeral=True,thinking=True)
-        await self.command('скупщик-статистика')(self.interaction,30,'list',False)
+        await self.command('скупщик статистика')(self.interaction,30,'list',False)
         self.assertIn('• ',self.interaction.edit_original_response.call_args.kwargs['content'])
 
     async def test_csv_headers_unicode_and_format_limits(self):
@@ -197,7 +201,7 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
         await notify_maximum_prices(self.store,self.message,self.report)
         self.guild.filesize_limit = 1
         with self.assertRaises(UserError):
-            await self.command('скупщик-статистика')(self.interaction,30,'table',True)
+            await self.command('скупщик статистика')(self.interaction,30,'table',True)
         self.interaction.edit_original_response.assert_not_awaited()
 
     async def test_detail_export_limit_is_explicit_without_truncation(self):

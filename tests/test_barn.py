@@ -41,7 +41,7 @@ class BarnCommandTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(client.close)
         tree = discord.app_commands.CommandTree(client)
         register_barn_commands(tree, store, 1)
-        command = tree.get_command('коровник-сбор', guild=discord.Object(id=1))
+        command = tree.get_command('коровник', guild=discord.Object(id=1)).get_command('сбор')
         for number, selected in enumerate((None, SimpleNamespace(id=222222222222222222))):
             user = SimpleNamespace(id=111111111111111111, bot=False)
             target = selected or user

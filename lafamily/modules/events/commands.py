@@ -1,4 +1,4 @@
-"""Slash-команды модуля МП; русские названия сохранены при переносе с JS."""
+"""Группы МП, баллов, справки и общих функций бота."""
 
 from io import BytesIO
 import asyncio
@@ -12,7 +12,8 @@ from lafamily.errors import UserError
 from lafamily.modules.admin_start import admin_setup_guide
 from lafamily.release import VERSION, LATEST_UPDATE
 from lafamily.async_database import database_call
-from lafamily.info import send_info, send_farm_info, send_admin_info
+from lafamily.info import send_info, send_farm_info, send_admin_info, send_command_list
+from lafamily.command_groups import command_group
 from lafamily.modules.events.models import Draft
 from lafamily.modules.events.payouts import send_payout
 from lafamily.modules.events.service import EventService
@@ -29,6 +30,11 @@ class EventCommands(app_commands.Group):
     def __init__(self, service: EventService):
         super().__init__(name="мп", description="Мероприятия семьи")
         self.service = service
+        kinds = app_commands.Group(name="виды", description="Виды мероприятий и ставки")
+        for command in (self.list_types, self.add_type, self.disable_type):
+            self.remove_command(command.name)
+            kinds.add_command(command)
+        self.add_command(kinds)
 
     async def type_choices(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         # Автодополнение нельзя отложить через defer: при занятой базе отвечаем пустым списком.
@@ -39,7 +45,7 @@ class EventCommands(app_commands.Group):
         return [app_commands.Choice(name=f"{kind['name']} — {kind['points']} очк."[:100], value=str(kind["id"]))
                 for kind in types if current.casefold() in kind["name"].casefold()][:25]
 
-    @app_commands.command(name="отчёт", description="Создать отчёт о мероприятии", extras={"access": "organizer"})
+    @app_commands.command(name="создать", description="Создать отчёт о мероприятии", extras={"access": "organizer"})
     @app_commands.rename(kind="вид", date="дата", note="примечание", voice="голосовой-канал")
     @app_commands.describe(kind="Выберите вид МП из подсказок", date="Выберите «Сегодня» или введите ГГГГ-ММ-ДД ЧЧ:ММ по Москве", note="Краткое примечание", voice="Добавить находящихся в голосовом канале участников")
     async def create_report(self, interaction: discord.Interaction, kind: str, date: str | None = None, note: app_commands.Range[str, 1, 300] | None = None, voice: discord.VoiceChannel | None = None):
@@ -50,7 +56,7 @@ class EventCommands(app_commands.Group):
         guild_id = str(interaction.guild_id)
         settings = await database_call(self.service.store, "settings", guild_id)
         if not settings:
-            raise UserError("Сначала администратор должен выполнить /настройки.")
+            raise UserError("Сначала администратор должен выполнить /бот настройки.")
         event_type = await database_call(self.service.store, "event_type", guild_id, int(kind)) if kind.isascii() and kind.isdigit() else None
         if not event_type:
             raise UserError("Выберите активный вид МП из подсказок.")
@@ -92,18 +98,18 @@ class EventCommands(app_commands.Group):
                 choices.append(app_commands.Choice(name=f"Вручную: {current}", value=current))
         return choices
 
-    @app_commands.command(name="виды", description="Показать активные виды МП и очки")
+    @app_commands.command(name="список", description="Показать активные виды МП и очки")
     async def list_types(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         types = await database_call(self.service.store, "types", str(interaction.guild_id))
         content = "\n".join(f"{escape_markdown(kind['name'])} — {kind['points']} очк.; итог: {'вкл' if kind['win_enabled'] else 'выкл'}, победа +{kind['win_bonus']}, MVP +{kind['mvp_bonus']}" for kind in types)
         if len(content) <= 1800:
-            await interaction.edit_original_response(content=content or "Виды МП ещё не настроены. Руководство может добавить их через /мп вид-добавить.")
+            await interaction.edit_original_response(content=content or "Виды МП ещё не настроены. Руководство может добавить их через /мп виды добавить.")
         else:
             raw = "\n".join(f"{kind['name']} — {kind['points']} очк." for kind in types)
             await interaction.edit_original_response(content="Список видов МП:", attachments=[discord.File(BytesIO(raw.encode("utf-8")), filename="event-types.txt")])
 
-    @app_commands.command(name="вид-добавить", description="Добавить вид МП или изменить его ставки", extras={"access": "manager"})
+    @app_commands.command(name="добавить", description="Добавить вид МП или изменить его ставки", extras={"access": "manager"})
     @app_commands.rename(name="название", points="очки", win="очки-победы", mvp="очки-mvp")
     @app_commands.describe(name="Выберите существующее название для изменения или введите новое",
                            points="Базовые очки; обязательны для нового вида, иначе сохраняются",
@@ -132,7 +138,7 @@ class EventCommands(app_commands.Group):
         return [app_commands.Choice(name=kind["name"], value=kind["name"])
                 for kind in types if current.casefold() in kind["name"].casefold()][:25]
 
-    @app_commands.command(name="вид-отключить", description="Скрыть вид МП, сохранив историю", extras={"access": "manager"})
+    @app_commands.command(name="отключить", description="Скрыть вид МП, сохранив историю", extras={"access": "manager"})
     @app_commands.rename(kind="вид")
     @app_commands.describe(kind="Выберите вид МП из подсказок")
     async def disable_type(self, interaction: discord.Interaction, kind: str):
@@ -147,7 +153,7 @@ class EventCommands(app_commands.Group):
     async def disable_autocomplete(self, interaction: discord.Interaction, current: str):
         return await self.type_choices(interaction, current)
 
-    @app_commands.command(name="просмотр", description="Посмотреть сохранённый отчёт")
+    @app_commands.command(name="посмотреть", description="Посмотреть сохранённый отчёт")
     @app_commands.rename(number="номер")
     @app_commands.describe(number="Номер отчёта")
     async def view_report(self, interaction: discord.Interaction, number: app_commands.Range[int, 1]):
@@ -155,7 +161,7 @@ class EventCommands(app_commands.Group):
         report = await database_call(self.service.store, "report", str(interaction.guild_id), number)
         await interaction.edit_original_response(embed=report_embed(report), allowed_mentions=discord.AllowedMentions.none())
 
-    @app_commands.command(name="статистика", description="Очки участников за всё время и текущую неделю", extras={"access": "admin"})
+    @app_commands.command(name="общие", description="Очки участников за всё время и текущую неделю", extras={"access": "admin"})
     @app_commands.rename(page="страница")
     @app_commands.describe(page="По 20 участников на страницу, сортировка по общим очкам")
     async def points_statistics(self, interaction: discord.Interaction, page: app_commands.Range[int, 1, 10000] = 1):
@@ -175,11 +181,11 @@ class EventCommands(app_commands.Group):
             "Всего — очки за всё время. Отменённые отчёты не учитываются.\n\n" + "\n".join(lines))
         footer = f"Страница {page} • Сортировка по общим очкам"
         if has_next:
-            footer += f" • Дальше: /мп статистика страница:{page + 1}"
+            footer += f" • Дальше: /баллы общие страница:{page + 1}"
         embed.set_footer(text=footer)
         await interaction.edit_original_response(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-    @app_commands.command(name="выплата-премии", description="Рассчитать премии за неделю пропорционально баллам", extras={"access": "admin"})
+    @app_commands.command(name="премии", description="Рассчитать премии за неделю пропорционально баллам", extras={"access": "admin"})
     @app_commands.default_permissions(administrator=True)
     @app_commands.rename(bank="банк-денег", week="неделя")
     @app_commands.describe(bank="Банк денег в целых долларах: распределяется весь между участниками",
@@ -206,7 +212,7 @@ class EventCommands(app_commands.Group):
 @app_commands.guild_only()
 class StatisticsCommands(app_commands.Group):
     def __init__(self, service: EventService):
-        super().__init__(name="статистика", description="Недельный учёт участия в МП")
+        super().__init__(name="баллы", description="Баллы, рейтинг и премии семьи")
         self.service = service
 
     async def show(self, interaction: discord.Interaction, week: int, personal: bool, page: int = 1):
@@ -222,7 +228,7 @@ class StatisticsCommands(app_commands.Group):
             content += "Начислений за этот период нет."
         await interaction.edit_original_response(content=content, allowed_mentions=discord.AllowedMentions.none())
 
-    @app_commands.command(name="моя", description="Ваши очки и количество МП")
+    @app_commands.command(name="мои", description="Ваши очки и количество МП")
     @app_commands.rename(week="неделя")
     @app_commands.describe(week="Период по московскому времени")
     @app_commands.choices(week=WEEKS)
@@ -240,10 +246,16 @@ class StatisticsCommands(app_commands.Group):
 def install_commands(tree: app_commands.CommandTree, service: EventService, guild_id: int):
     """Команды устанавливаются локально; публикация в Discord выполняется отдельно deploy.py."""
     guild = discord.Object(id=guild_id)
-    tree.add_command(EventCommands(service), guild=guild)
-    tree.add_command(StatisticsCommands(service), guild=guild)
+    events = EventCommands(service)
+    points = StatisticsCommands(service)
+    for command in (events.points_statistics, events.payout):
+        events.remove_command(command.name)
+        points.add_command(command)
+    tree.add_command(events, guild=guild)
+    tree.add_command(points, guild=guild)
+    bot_group = command_group(tree, guild_id, 'бот', 'Настройки, состояние и служебные отчёты бота')
 
-    @tree.command(name="настройки", description="Начальная настройка бота семьи", guild=guild, extras={"access": "admin"})
+    @bot_group.command(name="настройки", description="Начальная настройка бота семьи", extras={"access": "admin"})
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     @app_commands.rename(channel="канал")
@@ -270,10 +282,15 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
     async def farm_info_command(interaction: discord.Interaction):
         await send_farm_info(interaction, service.store)
 
-    @info_group.command(name="админам", description="Настройки, управление МП, анонсы и отчёты для руководства и администраторов", extras={"access": "manager"})
+    @info_group.command(name="админ", description="Настройки, управление МП, анонсы и отчёты для руководства и администраторов", extras={"access": "manager"})
     @app_commands.guild_only()
     async def admin_info_command(interaction: discord.Interaction):
         await send_admin_info(interaction, tree, service.store)
+
+    @tree.command(name="команды", description="Сгруппированный список всех команд без описаний", guild=guild, extras={"access": "all"})
+    @app_commands.guild_only()
+    async def command_list(interaction: discord.Interaction):
+        await send_command_list(interaction, tree)
 
     @tree.command(name="помощь", description="Общая справка по командам и правам (как /инфо общее)", guild=guild)
     @app_commands.guild_only()
@@ -281,7 +298,7 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
         await send_info(interaction, tree, service.store)
 
 
-    @tree.command(name="статус", description="Сообщить в текущий чат, что бот запущен и готов к работе", guild=guild, extras={"access": "all"})
+    @bot_group.command(name="статус", description="Сообщить в текущий чат, что бот запущен и готов к работе", extras={"access": "all"})
     @app_commands.guild_only()
     async def status_command(interaction: discord.Interaction):
         # Публичный ответ отправляется только по команде участника, без массовых упоминаний.
@@ -306,25 +323,26 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
             "Формат: `Name Surname | Static ID`.\nПример: `Sin Bertoni | 15096`. Должность перед именем допустима.", inline=False)
         embed.add_field(name="2 · Участвуй и получай баллы", value=
             "Ходи на МП — организатор добавит тебя в отчёт. Самостоятельно подавать отчёт об участии не нужно.\n"
-            "Собрал коровник? Введи `/коровник-сбор` и укажи сумму, например `+157к`. "
+            "Собрал коровник? Введи `/коровник сбор` и укажи сумму, например `+157к`. "
             "Без выбора участника баллы получишь ты.", inline=False)
         embed.add_field(name="3 · Посмотри свои результаты", value=
-            "`/статистика моя` — твои баллы за выбранную неделю.\n"
-            "`/статистика рейтинг` — результаты участников семьи.", inline=False)
+            "`/баллы мои` — твои баллы за выбранную неделю.\n"
+            "`/баллы рейтинг` — результаты участников семьи.", inline=False)
         embed.add_field(name="4 · Лови выгодные цены", value=
-            "`/скупщик-уведомление` → отметь нужные товары → **Подтвердить**.\n"
+            "`/скупщик подписки` → отметь нужные товары → **Подтвердить**.\n"
             "Выбери порог обычной цены: 95–100% или максимум, для всех товаров или каждого отдельно. "
             "В той же команде можно изменить подписки или отключить их.", inline=False)
         embed.add_field(name="Если хочется разобраться подробнее", value=
+            "📋 `/команды` — список всех команд по разделам без описаний.\n"
             "🌾 `/инфо фарм` — цены и подписки.\n"
             "📖 `/инфо общее` или `/помощь` — команды участников и организаторов.\n"
-            "🛠️ Администраторам и руководству: `/инфо админам` — настройки и управление ботом.\n"
+            "🛠️ Администраторам и руководству: `/инфо админ` — настройки и управление ботом.\n"
             "Не хватает доступа? Обратись к руководству семьи.", inline=False)
         embed.set_footer(text="Это сообщение видишь только ты. Вернуться к нему можно командой /старт участник.")
         await interaction.response.send_message(embed=embed, ephemeral=True,
                                                 allowed_mentions=discord.AllowedMentions.none())
 
-    @start_group.command(name="администратор", description="Порядок настройки бота с нуля после передеплоя", extras={"access": "admin"})
+    @start_group.command(name="админ", description="Порядок настройки бота с нуля после передеплоя", extras={"access": "admin"})
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     async def admin_start(interaction: discord.Interaction):

@@ -63,7 +63,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('/'+command.qualified_name,text)
             self.assertIn(command.description,text)
             self.assertIn(COMMAND_GUIDES[command.qualified_name],text)
-            if administrative and command.qualified_name != 'инфо админам':
+            if administrative and command.qualified_name != 'инфо админ':
                 self.assertNotIn('/'+command.qualified_name,general_text)
                 self.assertNotIn(COMMAND_GUIDES[command.qualified_name],general_text)
         self.assertIn(f'<@&{ORGANIZER}>',general_text)
@@ -84,7 +84,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
                 interaction=self.interaction(roles,admin)
                 self.assertEqual([available(interaction,self.store,l) for l in ('all','organizer','manager','admin')],expected)
                 fields=[f for p in build_info_pages(interaction,self.bot.tree,self.store)+build_admin_info_pages(interaction,self.bot.tree,self.store) for f in p.fields]
-                for name,allowed in zip(('мп виды','мп отчёт','мп отменить','админ-отчёты'),expected):
+                for name,allowed in zip(('мп виды список','мп создать','мп отменить','бот отчёты'),expected):
                     field=next(f for f in fields if f.name.endswith('/'+name))
                     self.assertEqual(field.name.startswith('✅'),allowed)
 
@@ -113,12 +113,12 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
             if view:
                 self.addCleanup(view.stop)
             text=page_text(view.pages if view else [payload['embed']])
-            self.assertNotIn('/админ-отчёты',text)
+            self.assertNotIn('/бот отчёты',text)
             self.assertNotIn('/анонс шаблон',text)
-            self.assertIn('/инфо админам',text)
+            self.assertIn('/инфо админ',text)
 
     async def test_admin_info_requires_management_access_and_does_not_change_database(self):
-        command=self.bot.tree.get_command('инфо',guild=discord.Object(id=GUILD)).get_command('админам')
+        command=self.bot.tree.get_command('инфо',guild=discord.Object(id=GUILD)).get_command('админ')
         self.assertEqual(command.extras['access'],'manager')
         before=self.store.db.total_changes
         for roles in ((),(ORGANIZER,)):
@@ -137,7 +137,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
                 self.addCleanup(view.stop)
             pages=view.pages if view else [payload['embed']]
             text=page_text(pages)
-            for word in ('/анонс расписание','/скупщик-статистика','/админ-отчёты','50 000','CSV','за 15 минут','только администратор Discord'):
+            for word in ('/анонс расписание','/скупщик статистика','/бот отчёты','50 000','CSV','за 15 минут','только администратор Discord'):
                 self.assertIn(word,text)
             self.check_limits(pages)
         self.assertEqual(before,self.store.db.total_changes)
@@ -150,7 +150,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
     async def test_farm_help_is_private_and_explains_current_subscription_steps(self):
         self.store.configure_prices(str(GUILD),'123','777777777777777777')
         group=self.bot.tree.get_command('инфо',guild=discord.Object(id=GUILD))
-        self.assertEqual({c.name for c in group.commands},{'общее','фарм','админам'})
+        self.assertEqual({c.name for c in group.commands},{'общее','фарм','админ'})
         interaction=self.interaction()
         await group.get_command('фарм').callback(interaction)
         payload=interaction.edit_original_response.call_args.kwargs
@@ -159,11 +159,11 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         embed=payload['embed']
         self.assertIn('<#777777777777777777>',embed.description)
         text=page_text([embed])
-        for word in ('/скупщик-уведомление','Подтвердить','Отмена','95–100%','90–95%',
+        for word in ('/скупщик подписки','Подтвердить','Отмена','95–100%','90–95%',
                      'Ручная обработка не уведомляет','ЛС','выше 100%','втором списке','третьем списке',
-                     '/коровник-сбор','/инфо админам'):
+                     '/коровник сбор','/инфо админ'):
             self.assertIn(word,text)
-        for name in ('/скупщик-настройка','/админ-отчёты','/скупщик-статистика'):
+        for name in ('/скупщик настройки','/бот отчёты','/скупщик статистика'):
             self.assertNotIn(name,text)
         self.check_limits([embed])
 
@@ -208,7 +208,7 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_status_is_public_and_available_to_members_without_mentions(self):
         interaction = self.interaction()
-        command = self.bot.tree.get_command("статус", guild=discord.Object(id=GUILD))
+        command = self.bot.tree.get_command('бот', guild=discord.Object(id=GUILD)).get_command('статус')
         self.assertEqual(command.extras['access'], 'all')
         await command.callback(interaction)
         call = interaction.response.send_message.call_args
@@ -237,11 +237,11 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         self.assertLess(len(embed), 2000)
         self.assertEqual(len(embed.fields), 5)
         text = '\n'.join(field.value for field in embed.fields)
-        for name in ('/статистика моя', '/коровник-сбор', '/скупщик-уведомление', 'Подтвердить', '/инфо фарм', '/инфо админам'):
+        for name in ('/баллы мои', '/коровник сбор', '/скупщик подписки', 'Подтвердить', '/инфо фарм', '/инфо админ'):
             self.assertIn(name, text)
 
     async def test_admin_start_is_private_readonly_and_covers_setup_within_discord_limits(self):
-        command=self.bot.tree.get_command('старт',guild=discord.Object(id=GUILD)).get_command('администратор')
+        command=self.bot.tree.get_command('старт',guild=discord.Object(id=GUILD)).get_command('админ')
         self.assertEqual(command.extras['access'],'admin')
         before=self.store.db.total_changes
         for roles in ((),(ORGANIZER,),(MANAGER,)):
@@ -258,9 +258,9 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(embeds),2)
         self.assertLessEqual(sum(len(e) for e in embeds),6000)
         text='\n'.join(e.description or '' for e in embeds)+'\n'+'\n'.join(field.value for e in embeds for field in e.fields)
-        for name in ('/настройки','Сохранить','/мп вид-добавить','/коровник-настройка','/скупщик-настройка',
-                     '/скупщик-уведомление','/модерация-настройки','/проверка-ника','/обновления-канал',
-                     '/мп отчёт','/мп отменить','/мп выплата-премии','main.py','база сохранена','/инфо админам'):
+        for name in ('/бот настройки','Сохранить','/мп виды добавить','/коровник настройки','/скупщик настройки',
+                     '/скупщик подписки','/заявки настройки','/ники проверить','/бот обновления',
+                     '/мп создать','/мп отменить','/баллы премии','main.py','база сохранена','/инфо админ'):
             self.assertIn(name,text)
         self.assertIn('[Ahero4/lafamily-bot](https://github.com/Ahero4/lafamily-bot)', text)
         for embed in embeds:

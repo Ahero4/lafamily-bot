@@ -46,7 +46,7 @@ class NicknameCommandTests(unittest.IsolatedAsyncioTestCase):
         self.bot=FamilyBot(Config('fake',123456789012345678,GUILD,Path(':memory:'),members_intent=True),self.store)
         self.addAsyncCleanup(self.bot.close)
         self.role=SimpleNamespace(id=ROLE,mention=f"<@&{ROLE}>")
-        self.command=self.bot.tree.get_command('проверка-ника',guild=discord.Object(id=GUILD))
+        self.command=self.bot.tree.get_command('ники',guild=discord.Object(id=GUILD)).get_command('проверить')
 
     def request(self,values=(),admin=True):
         request=SimpleNamespace(channel_id=999999999999999999,guild_id=GUILD,guild=SimpleNamespace(fetch_members=MagicMock(side_effect=lambda **kw:members(values)),filesize_limit=8*1024*1024),
@@ -107,8 +107,11 @@ class NicknameCommandTests(unittest.IsolatedAsyncioTestCase):
     async def test_registered_command_is_admin_and_intent_enabled_without_login(self):
         self.assertTrue(self.bot.intents.members)
         data=self.command.to_dict(self.bot.tree)
-        self.assertEqual(data['name'],'проверка-ника')
-        self.assertEqual(data['default_member_permissions'],discord.Permissions(administrator=True).value)
+        self.assertEqual(data['name'],'проверить')
+        self.assertEqual(self.command.qualified_name,'ники проверить')
+        self.assertEqual(self.command.default_permissions,discord.Permissions(administrator=True))
+        root=self.bot.tree.get_command('ники',guild=discord.Object(id=GUILD)).to_dict(self.bot.tree)
+        self.assertEqual(root['default_member_permissions'],discord.Permissions(administrator=True).value)
         self.assertEqual(self.command.extras['access'],'admin')
         self.assertEqual(data['options'][0]['name'],'роль')
         self.assertEqual(data['options'][0]['type'],discord.AppCommandOptionType.role.value)

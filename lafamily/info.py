@@ -54,8 +54,8 @@ def _command_pages(interaction, tree, store, administrative=False):
     else:
         personal = 'Ваш доступ: **участник**.'
     navigation = ('Для участников: `/инфо общее`; цены и подписки: `/инфо фарм`.' if administrative else
-                  '🌾 Цены и подписки: `/инфо фарм`.\nНастройки и управление для руководства и администраторов: `/инфо админам`.')
-    description = f'{personal}\n{navigation}\n\n✅ — доступно вам · 🔒 — нужна другая роль.\n{SYNTAX}'
+                  '🌾 Цены и подписки: `/инфо фарм`.\nНастройки и управление для руководства и администраторов: `/инфо админ`.')
+    description = f'{personal}\n📋 Все команды без описаний: `/команды`.\n{navigation}\n\n✅ — доступно вам · 🔒 — нужна другая роль.\n{SYNTAX}'
     def new_page():
         return discord.Embed(title=title,description=description,colour=0x7289DA)
     pages = []
@@ -193,8 +193,8 @@ def build_farm_info(price_settings=None):
     channel = f'<#{price_settings["channel_id"]}>' if price_settings else 'канал ещё не выбран руководством'
     embed = discord.Embed(title='🌾 LaFamily • фарм и скупщики',colour=0x43B581,
         description=f'**Канал цен:** {channel}\nСравнение цен находится в канале, уведомления по вашим товарам приходят в личные сообщения Discord (DM).')
-    embed.add_field(name='🔔 /скупщик-уведомление — включить подписки',value=
-        '**1.** Откройте `/скупщик-уведомление` и отметьте нужные товары в первом списке.\n'
+    embed.add_field(name='🔔 /скупщик подписки — включить подписки',value=
+        '**1.** Откройте `/скупщик подписки` и отметьте нужные товары в первом списке.\n'
         '**2.** Во втором списке выберите, для кого менять режим: все выбранные товары или один товар. Само это поле режим не меняет.\n'
         '**3.** В третьем списке задайте «95 - 100» или «Макс. цена». Например: всем товарам диапазон, а меди — максимум.\n'
         '**4.** Проверьте список и нажмите **Подтвердить**. До подтверждения ничего не сохраняется.\n'
@@ -212,7 +212,7 @@ def build_farm_info(price_settings=None):
         'Новый цикл — после выхода цены из условия и нового входа. Рост с 95% до 100% не вызывает второй сигнал в режиме диапазона. '
         'Ручная обработка не уведомляет подписчиков. Подписки сохраняются после перезапуска.',inline=False)
     embed.add_field(name='✏️ Изменить или отключить подписки',value=
-        'Снова откройте `/скупщик-уведомление`: сохранённые товары уже отмечены. Снимите лишние отметки или измените режим и подтвердите. '
+        'Снова откройте `/скупщик подписки`: сохранённые товары уже отмечены. Снимите лишние отметки или измените режим и подтвердите. '
         '**Пустой выбор + Подтвердить** отключает все подписки. **Отмена** и истечение меню оставляют прежние настройки.',inline=False)
     embed.add_field(name='💰 Значки в сравнении цен',value=
         '✅ и **жирный** — лучшая цена среди трёх скупщиков; при равенстве выделяются все.\n'
@@ -222,13 +222,13 @@ def build_farm_info(price_settings=None):
         '**Охота:** шкура, идеальное и хорошее мясо. **Горщик:** медь, изумруд, рубин, алмаз.\n'
         '**Рыбалка:** окунь, карп, форель, лосось. **Нефтекачка:** бензин, солярка, керосин.\n'
         '**Остальное:** жемчуг, фальшивые деньги. **Продукты:** капуста, тыква, мандарины, ананасы.',inline=False)
-    embed.add_field(name='🐄 /коровник-сбор — записать сбор',value=
-        '`/коровник-сбор сумма:+157к [участник]` — запишите сумму (от 1 до 1 000 000 000). '
+    embed.add_field(name='🐄 /коровник сбор — записать сбор',value=
+        '`/коровник сбор сумма:+157к [участник]` — запишите сумму (от 1 до 1 000 000 000). '
         'Без участника баллы получит автор команды; можно выбрать другого человека. Награда за сбор фиксированная. '
-        'Свои результаты смотрите в `/статистика моя`, семейный рейтинг — в `/статистика рейтинг`.',inline=False)
+        'Свои результаты смотрите в `/баллы мои`, семейный рейтинг — в `/баллы рейтинг`.',inline=False)
     embed.add_field(name='📚 Другие разделы',value=
         '`/инфо общее` или `/помощь` — команды участников и организаторов. '
-        'Руководству и администраторам: `/инфо админам` — настройки скупщиков, служебные отчёты и выгрузка истории доставки.',inline=False)
+        'Руководству и администраторам: `/инфо админ` — настройки скупщиков, служебные отчёты и выгрузка истории доставки.',inline=False)
     embed.set_footer(text='Справка личная. Цены сравниваются с локальным справочником максимумов.')
     return embed
 
@@ -237,3 +237,45 @@ async def send_farm_info(interaction, store):
     await interaction.response.defer(ephemeral=True,thinking=True)
     settings = await database_call(store,'price_settings',str(interaction.guild_id))
     await interaction.edit_original_response(embed=build_farm_info(settings),allowed_mentions=discord.AllowedMentions.none())
+
+
+COMMAND_SECTIONS = {
+    'мп': 'Мероприятия', 'баллы': 'Баллы и премии', 'коровник': 'Коровник',
+    'скупщик': 'Скупщик', 'заявки': 'Вступление', 'ники': 'Проверка ников',
+    'бот': 'Бот', 'анонс': 'Анонсы', 'инфо': 'Справка', 'старт': 'Первое знакомство',
+    'команды': 'Быстрый доступ', 'помощь': 'Быстрый доступ',
+}
+
+
+def build_command_list(tree, guild_id):
+    """Только полные названия, включая служебные команды, без фильтрации по правам."""
+    sections = {}
+    for command in tree.walk_commands(guild=discord.Object(id=guild_id)):
+        if isinstance(command, app_commands.Command):
+            root = command.qualified_name.split()[0]
+            section = COMMAND_SECTIONS.get(root, root)
+            sections.setdefault(section, []).append(command.qualified_name)
+    pages = []
+    page = discord.Embed(title='LaFamily • список команд', colour=0x7289DA)
+    order = list(dict.fromkeys(COMMAND_SECTIONS.values()))
+    for section in sorted(sections, key=lambda s: (order.index(s) if s in order else len(order), s)):
+        chunks = ['']
+        for name in sorted(sections[section]):
+            line = f'`/{name}`\n'
+            if len(chunks[-1]) + len(line) > 1000:
+                chunks.append('')
+            chunks[-1] += line
+        for chunk in chunks:
+            if len(page) + len(section) + len(chunk) > 5400 or len(page.fields) >= 24:
+                pages.append(page)
+                page = discord.Embed(title='LaFamily • список команд', colour=0x7289DA)
+            page.add_field(name=section, value=chunk.rstrip(), inline=False)
+    pages.append(page)
+    for i, page in enumerate(pages, 1):
+        page.set_footer(text=f'{i}/{len(pages)} · Описания: /инфо общее, /инфо фарм, /инфо админ.')
+    return pages
+
+
+async def send_command_list(interaction, tree):
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    await _send_pages(interaction, build_command_list(tree, interaction.guild_id))

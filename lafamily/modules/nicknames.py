@@ -1,4 +1,5 @@
 """Проверка отображаемых имён сервера без изменения ников; уведомления только после подтверждения."""
+from lafamily.command_groups import command_group
 import asyncio
 import gzip
 import re
@@ -49,10 +50,12 @@ async def audit_members(guild, role_id: int | None = None) -> AuditResult:
 
 
 def register_nickname_command(tree, store, guild_id):
+    group = command_group(tree, guild_id, 'ники', 'Проверка имён участников')
+    group.default_permissions = discord.Permissions(administrator=True)
     running = set()
 
-    @tree.command(name='проверка-ника', description='Проверить ники всех участников или только выбранной роли',
-                  guild=discord.Object(id=guild_id), extras={'access': 'admin'})
+    @group.command(name='проверить', description='Проверить ники всех участников или только выбранной роли',
+                  extras={'access': 'admin'})
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     @app_commands.rename(role="роль")

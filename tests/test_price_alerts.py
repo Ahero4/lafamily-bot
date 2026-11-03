@@ -96,7 +96,7 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(client.close)
         tree = discord.app_commands.CommandTree(client)
         register_price_commands(tree, SimpleNamespace(store=self.store, guild_id=1), 1)
-        command = tree.get_command('скупщик-уведомление', guild=discord.Object(id=1))
+        command = tree.get_command('скупщик', guild=discord.Object(id=1)).get_command('подписки')
         self.assertEqual(command.extras['access'], 'all')
         self.assertEqual(command.parameters, [])
 

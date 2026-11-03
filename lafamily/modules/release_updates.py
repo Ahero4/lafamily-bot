@@ -1,4 +1,5 @@
 """Публикация пропущенных выпусков из истории версий в выбранный канал."""
+from lafamily.command_groups import command_group
 import asyncio
 from io import BytesIO
 
@@ -99,8 +100,9 @@ class ReleaseUpdates:
 
 
 def register_release_updates(tree, service, guild_id):
-    @tree.command(name='обновления-канал', description='Выбрать канал и опубликовать недостающие версии бота',
-                  guild=discord.Object(id=guild_id), extras={'access': 'admin'})
+    group = command_group(tree, guild_id, 'бот', 'Настройки, состояние и служебные отчёты бота')
+    @group.command(name='обновления', description='Выбрать канал и опубликовать недостающие версии бота',
+                  extras={'access': 'admin'})
     @discord.app_commands.guild_only()
     @discord.app_commands.default_permissions(administrator=True)
     @discord.app_commands.rename(channel='канал')

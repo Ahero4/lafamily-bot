@@ -200,7 +200,7 @@ class PriceCommandsTests(unittest.IsolatedAsyncioTestCase):
         self.store.configure(str(GUILD), str(ACTOR), str(CHANNEL), 'organizer', ['manager-one', 'manager-two'])
         self.bot = FamilyBot(Config('fake', 123456789012345678, GUILD, Path(':memory:'), message_content_intent=True), self.store)
         self.addAsyncCleanup(self.bot.close)
-        self.settings = self.bot.tree.get_command('скупщик-настройка', guild=discord.Object(id=GUILD))
+        self.settings = self.bot.tree.get_command('скупщик', guild=discord.Object(id=GUILD)).get_command('настройки')
 
     def request(self, role=None, admin=False):
         return SimpleNamespace(guild_id=GUILD, guild=SimpleNamespace(), user=SimpleNamespace(id=ACTOR, roles=[SimpleNamespace(id=role)] if role else []),
@@ -223,7 +223,7 @@ class PriceCommandsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.store.price_settings(str(GUILD)))
 
     async def test_invalid_message_id_is_rejected_and_content_flag_defaults_off(self):
-        process = self.bot.tree.get_command('скупщик-обработать', guild=discord.Object(id=GUILD))
+        process = self.bot.tree.get_command('скупщик', guild=discord.Object(id=GUILD)).get_command('обработать')
         with self.assertRaises(UserError): await process.callback(self.request('manager-one'), 'not-an-id')
         env = {'DISCORD_TOKEN': 'fake', 'DISCORD_CLIENT_ID': '123456789012345678', 'DISCORD_GUILD_ID': str(GUILD)}
         with patch('lafamily.config.load_dotenv'), patch.dict('os.environ', env, clear=True):

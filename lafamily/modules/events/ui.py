@@ -74,7 +74,7 @@ class ReportView(discord.ui.View):
 
     async def validate(self, interaction: discord.Interaction):
         if self.finished or time.monotonic() >= self.expires_at:
-            raise UserError("Черновик истёк или уже обработан. Создайте новый через /мп отчёт.")
+            raise UserError("Черновик истёк или уже обработан. Создайте новый через /мп создать.")
         if str(interaction.guild_id) != self.draft.guild_id:
             raise UserError("Черновик относится к другому серверу.")
         # Автор управляет своим черновиком; чужим — только руководство или admin.
@@ -86,7 +86,7 @@ class ReportView(discord.ui.View):
         try:
             # Проверка роли выполняется после defer в dispatch, до операций с данными.
             if self.finished or time.monotonic() >= self.expires_at:
-                raise UserError("Черновик истёк или уже обработан. Создайте новый через /мп отчёт.")
+                raise UserError("Черновик истёк или уже обработан. Создайте новый через /мп создать.")
             return True
         except UserError as error:
             await send_error(interaction, error)
@@ -158,7 +158,7 @@ class ReportView(discord.ui.View):
     async def on_timeout(self):
         async with self.lock:
             if not self.finished:
-                await self.retire("Срок черновика истёк. Создайте новый через /мп отчёт.")
+                await self.retire("Срок черновика истёк. Создайте новый через /мп создать.")
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item):
         await send_error(interaction, error)

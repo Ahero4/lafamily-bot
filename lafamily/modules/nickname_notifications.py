@@ -60,7 +60,7 @@ class NicknameNoticeView(discord.ui.View):
         async with self.lock:
             if not self.finished:
                 self.finish()
-                await self.update_status(self.original, 'Срок подтверждения истёк. Участники не уведомлялись. Запустите /проверка-ника заново.')
+                await self.update_status(self.original, 'Срок подтверждения истёк. Участники не уведомлялись. Запустите /ники проверить заново.')
 
     async def on_error(self, interaction, error, item):
         await send_error(interaction, error)

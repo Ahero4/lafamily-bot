@@ -1,4 +1,5 @@
 """Учёт сборов коровника: фиксированная награда за сбор в общей истории баллов."""
+from lafamily.command_groups import command_group
 import re
 from decimal import Decimal
 
@@ -25,9 +26,9 @@ def parse_amount(value: str) -> int:
 
 
 def register_barn_commands(tree, store, guild_id):
-    guild = discord.Object(id=guild_id)
+    group = command_group(tree, guild_id, 'коровник', 'Сборы коровника и награды')
 
-    @tree.command(name='коровник-настройка', description='Задать количество баллов за один сбор коровника', guild=guild, extras={'access': 'admin'})
+    @group.command(name='настройки', description='Задать количество баллов за один сбор коровника', extras={'access': 'admin'})
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     @app_commands.rename(points='баллы')
@@ -37,7 +38,7 @@ def register_barn_commands(tree, store, guild_id):
         await database_call(store, 'configure_barn', str(interaction.guild_id), str(interaction.user.id), points)
         await interaction.edit_original_response(content=f'За один новый сбор коровника: **{points} балл.** Сумма сбора на награду не влияет.')
 
-    @tree.command(name='коровник-сбор', description='Записать сумму сбора коровника и начислить баллы участнику', guild=guild, extras={'access': 'all'})
+    @group.command(name='сбор', description='Записать сумму сбора коровника и начислить баллы участнику', extras={'access': 'all'})
     @app_commands.guild_only()
     @app_commands.rename(amount='сумма', member='участник')
     @app_commands.describe(amount='Например: 157000 или +157к', member='Кто собрал; если не выбран — автор команды')

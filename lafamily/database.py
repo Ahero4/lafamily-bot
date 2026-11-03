@@ -357,7 +357,7 @@ class Store(PriceDeliveryStore):
                 return self.report(guild_id, existing['id'])
             settings = self.db.execute('SELECT points FROM barn_settings WHERE guild_id=?', (guild_id,)).fetchone()
             if not settings:
-                raise UserError('Администратору нужно сначала выполнить /коровник-настройка и задать баллы за сбор.')
+                raise UserError('Администратору нужно сначала выполнить /коровник настройки и задать баллы за сбор.')
             now = timestamp()
             result = self.db.execute("""INSERT INTO reports
                 (guild_id, request_id, organizer_id, type_name, points, occurred_at, note, created_at, channel_id)

@@ -55,9 +55,9 @@ class PriceSubscriptionView(discord.ui.View):
 
     def check_owner(self, interaction):
         if interaction.user.id != self.owner_id or interaction.guild_id != self.guild_id:
-            raise UserError('Это меню принадлежит другому участнику. Откройте /скупщик-уведомление для себя.')
+            raise UserError('Это меню принадлежит другому участнику. Откройте /скупщик подписки для себя.')
         if self.finished or time.monotonic() >= self.expires_at:
-            raise UserError('Меню закрыто или устарело. Откройте /скупщик-уведомление заново.')
+            raise UserError('Меню закрыто или устарело. Откройте /скупщик подписки заново.')
 
     async def interaction_check(self, interaction):
         try:
@@ -104,7 +104,7 @@ class PriceSubscriptionView(discord.ui.View):
                 self.service.require_enabled()
                 settings = await database_call(self.service.store, 'price_settings', str(self.guild_id))
                 if not settings:
-                    raise UserError('Руководству нужно сначала выбрать канал через /скупщик-настройка.')
+                    raise UserError('Руководству нужно сначала выбрать канал через /скупщик настройки.')
                 channel = await interaction.guild.fetch_channel(int(settings['channel_id']))
                 self.service.require_channel(channel, interaction.guild)
                 if not channel.permissions_for(interaction.user).view_channel:
@@ -134,7 +134,7 @@ class PriceSubscriptionView(discord.ui.View):
             self.finish()
             try:
                 await self.original.edit_original_response(
-                    content='Время выбора истекло. Подписки не изменились. Откройте /скупщик-уведомление заново.', view=None)
+                    content='Время выбора истекло. Подписки не изменились. Откройте /скупщик подписки заново.', view=None)
             except discord.HTTPException:
                 pass  # Личное сообщение могло быть удалено; подписки всё равно не меняются.
 

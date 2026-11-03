@@ -118,7 +118,7 @@ class ReleaseTests(unittest.IsolatedAsyncioTestCase):
         bot = FamilyBot(Config('token', 123, G, Path(':memory:')), self.store)
         self.addAsyncCleanup(bot.close)
         bot.release_updates.client = self.client
-        command = bot.tree.get_command('обновления-канал', guild=discord.Object(id=G))
+        command = bot.tree.get_command('бот', guild=discord.Object(id=G)).get_command('обновления')
         interaction = SimpleNamespace(guild_id=G, guild=self.guild, user=SimpleNamespace(id=1, roles=[]),
             permissions=discord.Permissions.none(), response=SimpleNamespace(defer=AsyncMock()),
             edit_original_response=AsyncMock())

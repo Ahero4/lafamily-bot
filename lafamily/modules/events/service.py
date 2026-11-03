@@ -25,7 +25,7 @@ class EventService:
             channel = await guild.fetch_channel(int(channel_id))
             me = guild.me
         except discord.DiscordException as error:
-            raise UserError("Канал отчётов недоступен. Попросите администратора проверить /настройки.") from error
+            raise UserError("Канал отчётов недоступен. Попросите администратора проверить /бот настройки.") from error
         if not isinstance(channel, discord.TextChannel):
             raise UserError("Для отчётов нужен обычный текстовый канал.")
         if me is None:
@@ -51,7 +51,7 @@ class EventService:
         if previous:
             if previous.lock.locked():
                 raise UserError("Предыдущий отчёт ещё сохраняется. Дождитесь результата.")
-            await previous.retire("Черновик заменён новым. Используйте новое сообщение /мп отчёт.")
+            await previous.retire("Черновик заменён новым. Используйте новое сообщение /мп создать.")
         return self.new_view(draft)
 
     async def confirm(self, interaction: discord.Interaction, view: ReportView) -> str:
@@ -94,7 +94,7 @@ class EventService:
         if report.get('mvp_id'):
             content += f" MVP <@{report['mvp_id']}> дополнительно: +{report['mvp_bonus']} очк."
         if not published:
-            content += " Опубликовать сообщение не удалось. Повторно подавать отчёт не нужно; используйте /мп просмотр."
+            content += " Опубликовать сообщение не удалось. Повторно подавать отчёт не нужно; используйте /мп посмотреть."
         return content
 
     async def update_cancelled(self, guild: discord.Guild, report: dict) -> bool:
