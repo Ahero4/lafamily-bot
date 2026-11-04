@@ -78,6 +78,7 @@ class EventService:
         members = await asyncio.gather(*(fetch_member(member_id) for member_id in draft.members))
         if any(member is None or member.bot for member in members):
             raise UserError("Часть состава недоступна на сервере. Очистите состав и выберите участников заново.")
+        draft.enforce_duplicates = True
         report = await database_call(self.store, "create_report", draft)
         view.finish()
         # Сначала сохраняем начисление. Сбой публикации не должен потерять отчёт.

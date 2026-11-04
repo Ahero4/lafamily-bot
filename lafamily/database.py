@@ -10,12 +10,16 @@ from lafamily.errors import UserError
 from lafamily.modules.events.models import Draft
 from lafamily.modules.events.time import timestamp
 from lafamily.price_delivery_store import PriceDeliveryStore
+from lafamily.price_dm_store import PriceDmStore
+from lafamily.insights_store import InsightsStore
+from lafamily.planning_store import PlanningStore
+from lafamily.jobs_store import JobsStore
 from lafamily.backup_store import BackupStore
 from lafamily.channel_store import ChannelStore
 from lafamily.onboarding_store import OnboardingStore
 
 
-class Store(PriceDeliveryStore, BackupStore, ChannelStore, OnboardingStore):
+class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, JobsStore, BackupStore, ChannelStore, OnboardingStore):
     def __init__(self, path: str | Path):
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -110,8 +114,12 @@ class Store(PriceDeliveryStore, BackupStore, ChannelStore, OnboardingStore):
         """)
         self.init_database_backups()
         self.init_price_delivery()
+        self.init_price_dms()
         self.init_onboarding()
         self.migrate_event_bonuses()
+        self.init_insights()
+        self.init_planning()
+        self.init_jobs()
         # Старые подписки сохраняют прежний режим и защиту от повторных тегов.
         if 'threshold' not in {r['name'] for r in self.db.execute('PRAGMA table_info(price_subscriptions)')}:
             self.db.execute("ALTER TABLE price_subscriptions ADD COLUMN threshold TEXT NOT NULL DEFAULT 'max'")
@@ -242,6 +250,11 @@ class Store(PriceDeliveryStore, BackupStore, ChannelStore, OnboardingStore):
             existing = self.db.execute("SELECT id FROM reports WHERE request_id=? AND guild_id=?", (draft.request_id, draft.guild_id)).fetchone()
             if existing:
                 return self.report(draft.guild_id, existing["id"])
+            if draft.enforce_duplicates:
+                key, matches = self.duplicate_report_key(draft)
+                if matches and draft.duplicate_ack != key:
+                    raise UserError('Найдены похожие отчёты: '+', '.join(f'#{n}' for n in matches)+
+                                    '. Проверьте их и нажмите «Разрешить похожий отчёт», затем подтвердите ещё раз.')
             if not self.event_type(draft.guild_id, draft.type_id):
                 raise UserError("Этот вид МП отключён. Создайте новый отчёт.")
             members = list(dict.fromkeys(draft.members))

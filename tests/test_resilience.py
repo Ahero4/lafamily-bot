@@ -116,6 +116,9 @@ class DraftFailureTests(unittest.IsolatedAsyncioTestCase):
         command = EventCommands(self.service)
         first, retry = request("manager"), request("manager")
         await command.cancel_report.callback(command, first, report["id"], "Исходная причина")
+        confirmation=first.edit_original_response.call_args.kwargs['view']
+        self.assertIsNone(self.store.report(GUILD,report['id'])['cancelled_at'])
+        await confirmation.confirm.callback(first)
         self.assertIn("Повторите", first.edit_original_response.call_args.kwargs["content"])
         await command.cancel_report.callback(command, retry, report["id"], "Новая причина")
         self.assertEqual(self.service.update_cancelled.await_count, 2)

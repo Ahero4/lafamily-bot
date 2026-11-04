@@ -22,6 +22,7 @@ class ChannelStore:
             ('admin_report_settings', 'channel_id'), ('database_backup_settings', 'channel_id'),
             ('onboarding_requests', 'review_channel_id'),
             ('reports', 'channel_id'), ('release_deliveries', 'channel_id'),
+            ('planned_events', 'channel_id'),
         )
         for table, column in uses:
             if self.db.execute(f'SELECT 1 FROM {table} WHERE guild_id=? AND {column}=? LIMIT 1',

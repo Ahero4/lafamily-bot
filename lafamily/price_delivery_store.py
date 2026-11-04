@@ -1,4 +1,4 @@
-"""Журнал доставки DM скупщика; методы вызываются в потоке DatabaseWorker."""
+"""Журнал доставки ЛС скупщика; методы вызываются в потоке DatabaseWorker."""
 from lafamily.errors import UserError
 from lafamily.modules.events.time import timestamp
 
@@ -68,8 +68,10 @@ class PriceDeliveryStore:
             SUM(a.state='sent') AS sent,
             SUM(a.state IN ('forbidden','not_found','failed')) AS failed,
             SUM(a.state='uncertain') AS uncertain, SUM(a.state='pending') AS pending
-            FROM price_delivery_runs r JOIN price_delivery_attempts a ON a.run_id=r.id
-            WHERE r.guild_id=? AND r.id=? GROUP BY r.id''', (guild_id, run_id)).fetchone()
+            FROM price_delivery_runs r JOIN (SELECT MIN(id) AS id,run_id,user_id,state
+                FROM price_delivery_attempts GROUP BY run_id,COALESCE(message_group,'attempt-'||id)) a ON a.run_id=r.id
+            WHERE r.guild_id=? AND r.id=?
+            GROUP BY r.id''', (guild_id, run_id)).fetchone()
         return dict(row) if row else None
 
     def price_delivery_data(self, guild_id, start, end, details=False):
@@ -79,7 +81,8 @@ class PriceDeliveryStore:
             COUNT(a.id) AS messages, SUM(a.state='sent') AS sent,
             SUM(a.state IN ('forbidden','not_found','failed')) AS failed,
             SUM(a.state='uncertain') AS uncertain, SUM(a.state='pending') AS pending
-            FROM price_delivery_runs r JOIN price_delivery_attempts a ON a.run_id=r.id
+            FROM price_delivery_runs r JOIN (SELECT MIN(id) AS id,run_id,user_id,state
+                FROM price_delivery_attempts GROUP BY run_id,COALESCE(message_group,'attempt-'||id)) a ON a.run_id=r.id
             WHERE r.guild_id=? AND r.created_at>=? AND r.created_at<?
             GROUP BY day ORDER BY day''', (guild_id, start, end)).fetchall()
         daily = [dict(row) for row in rows]
@@ -91,7 +94,7 @@ class PriceDeliveryStore:
         if details:
             attempts = [dict(row) for row in self.db.execute('''SELECT r.id AS run_id, r.created_at,
                 r.source_id, r.channel_id, r.subscribers, r.admin_state, a.user_id, a.item, a.threshold,
-                a.state, a.error_type, a.completed_at FROM price_delivery_runs r
+                a.state, a.error_type, a.completed_at, a.message_group FROM price_delivery_runs r
                 JOIN price_delivery_attempts a ON a.run_id=r.id
                 WHERE r.guild_id=? AND r.created_at>=? AND r.created_at<?
                 ORDER BY r.created_at,r.id,a.id LIMIT 50001''', (guild_id,start,end))]

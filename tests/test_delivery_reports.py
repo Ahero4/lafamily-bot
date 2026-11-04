@@ -4,6 +4,7 @@ import csv
 import io
 import tempfile
 import unittest
+from itertools import count
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,7 +32,9 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
         self.store.set_price_subscription('1', '123', 'Капуста', True)
         self.store.set_price_subscription('1', '456', 'Медь', True)
         self.report = parse_prices(EXAMPLE.replace('- Медь: $36 ($43)', '- Медь: $60 ($72)').replace('- Капуста: $720', '- Капуста: $748'))
-        self.members = {i: SimpleNamespace(send=AsyncMock()) for i in (123,456)}
+        dm_ids = count(1000)
+        self.members = {i: SimpleNamespace(send=AsyncMock(side_effect=lambda **kwargs: SimpleNamespace(
+            id=next(dm_ids), author=SimpleNamespace(id=789), channel=SimpleNamespace(id=50)))) for i in (123,456)}
         self.channel = MagicMock(spec=discord.TextChannel)
         self.channel.id = 3
         self.channel.send = AsyncMock(return_value=SimpleNamespace(id=900))

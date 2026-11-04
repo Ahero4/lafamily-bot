@@ -1,0 +1,46 @@
+name: Проверки и подготовка проверенной версии
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install --require-hashes -r requirements.txt
+      - name: Синтаксис
+        run: python -B tools/check_syntax.py
+      - name: Тесты
+        run: python -B -m unittest discover -s tests -q
+  promote:
+    needs: tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Обновить ветку проверенного кода для хостинга
+        shell: bash
+        run: |
+          set -euo pipefail
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            echo 'В main уже новая версия; эта проверенная версия не публикуется.'
+            exit 0
+          fi
+          git push origin HEAD:refs/heads/deploy

@@ -37,15 +37,15 @@ def format_dynamics(daily, view):
     # В чате показываем последние 10 дней с рассылками; CSV содержит весь выбранный период.
     rows = daily[-10:]
     prefix = ('**Динамика уведомлений скупщика · дни по Москве**\n'
-              'Люди: получено хотя бы одно DM / получатели. Сообщения: отправлено / всего.\n')
+              'Люди: получено хотя бы одно ЛС / получатели. Сообщения: отправлено / всего.\n')
     if view == 'table':
-        lines = ['Дата       | Подп. | Люди | DM | Ошибки | ? | Ожид.', '-----------|-------|------|----|--------|---|------']
+        lines = ['Дата       | Подп. | Люди | ЛС | Ошибки | ? | Ожид.', '-----------|-------|------|----|--------|---|------']
         for r in rows:
             lines.append(f"{r['day']} | {r['subscribers']} | {r['delivered']}/{r['recipients']} | {r['sent']}/{r['messages']} | "
                          f"{r['failed']} | {r['uncertain']} | {r['pending']}")
         body = '```\n' + '\n'.join(lines) + '\n```'
     else:
-        body = '\n'.join(f"• {r['day']}: подп. {r['subscribers']}, люди {r['delivered']}/{r['recipients']}, DM {r['sent']}/{r['messages']}, "
+        body = '\n'.join(f"• {r['day']}: подп. {r['subscribers']}, люди {r['delivered']}/{r['recipients']}, ЛС {r['sent']}/{r['messages']}, "
             f"ошибки {r['failed']}, ? {r['uncertain']}, ожид. {r['pending']}" for r in rows)
     tail = ('\n? — доставка не подтверждена; ожид. — результат не записан (в том числе прерванная рассылка). '
             'Подп. — снимок на последнюю рассылку дня. Доставка не означает прочтение. Люди уникальны внутри дня; показаны дни с рассылками.')
@@ -71,7 +71,7 @@ async def send_admin_delivery_report(store, message, run_id):
         posted = await channel.send(
             content=('**Отчёт рассылки скупщика**\n'
                 f"Подписчиков на момент рассылки: **{summary['subscribers']}**.\n"
-                f"Получили хотя бы одно DM: **{summary['delivered']} из {summary['recipients']}** получателей.\n"
+                f"Получили хотя бы одно ЛС: **{summary['delivered']} из {summary['recipients']}** получателей.\n"
                 f"Сообщения: успешно **{summary['sent']} из {summary['messages']}**, "
                 f"ошибок **{summary['failed']}**, не подтверждено **{summary['uncertain']}**, "
                 f"без результата **{summary['pending']}**.\n"
@@ -110,7 +110,7 @@ def register_delivery_commands(tree, service, guild):
                     'Админские отчёты отключены. История доставки продолжает сохраняться в БД.',
             allowed_mentions=discord.AllowedMentions.none())
 
-    @price_group.command(name='статистика', description='Динамика доставки DM по дням и CSV-выгрузка',
+    @price_group.command(name='статистика', description='Динамика доставки ЛС по дням и CSV-выгрузка',
                   extras={'access': 'admin'})
     @app_commands.guild_only()
     @app_commands.rename(days='дней', view='вид', export='выгрузка')

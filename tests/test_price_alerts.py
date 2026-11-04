@@ -1,6 +1,7 @@
 """Сохранение подписок и защита от повторных тегов между почасовыми отчётами."""
 import tempfile
 import unittest
+from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -21,7 +22,9 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.store.close)
         self.store.set_price_subscription('1', '123', 'Медь', True)
         self.channel = SimpleNamespace(id=2, send=AsyncMock(), permissions_for=lambda member: SimpleNamespace(view_channel=True))
-        self.dm = SimpleNamespace(send=AsyncMock())
+        dm_ids = count(1000)
+        self.dm = SimpleNamespace(send=AsyncMock(side_effect=lambda **kwargs: SimpleNamespace(
+            id=next(dm_ids), author=SimpleNamespace(id=789), channel=SimpleNamespace(id=50))))
         self.members = {}
         def get_member(user_id):
             return self.members.setdefault(user_id, SimpleNamespace(id=user_id, send=AsyncMock(wraps=self.dm.send)))
@@ -109,8 +112,11 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         self.message.embeds = []
         self.message.message_snapshots = []
         client = SimpleNamespace(user=SimpleNamespace(id=789), intents=SimpleNamespace(message_content=True))
+        self.channel.guild=self.message.guild
+        client.fetch_channel=AsyncMock(return_value=self.channel)
         service = PriceService(client, self.store, 1)
-        with patch.object(service, 'require_channel'), patch.object(service, 'cleanup_channel', new=AsyncMock()):
+        with patch.object(service, 'require_channel'), patch.object(service, 'cleanup_channel', new=AsyncMock()), \
+                patch('lafamily.modules.prices.service.cleanup_price_dms', new=AsyncMock()):
             self.assertEqual(await service.process(self.message, notify=False), 'published')
             self.assertEqual(self.channel.send.await_count, 1)
             self.dm.send.assert_not_awaited()

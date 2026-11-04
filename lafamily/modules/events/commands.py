@@ -21,6 +21,7 @@ from lafamily.modules.events.time import MOSCOW, display_date, parse_event_date,
 from lafamily.modules.events.ui import report_embed
 from lafamily.permissions import require_access_async
 from lafamily.settings_ui import SettingsView
+from lafamily.confirmations import ConfirmAction
 
 WEEKS = [app_commands.Choice(name="Текущая", value=0), app_commands.Choice(name="Прошлая", value=-1)]
 
@@ -202,12 +203,18 @@ class EventCommands(app_commands.Group):
     async def cancel_report(self, interaction: discord.Interaction, number: app_commands.Range[int, 1], reason: app_commands.Range[str, 1, 300]):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction, self.service.store, "manager")
-        report = await database_call(self.service.store, "cancel_report", str(interaction.guild_id), str(interaction.user.id), number, reason)
-        published = await self.service.update_cancelled(interaction.guild, report)
-        content = f"Отчёт #{number} отменён, очки исключены из статистики."
-        if not published:
-            content += " Публикацию обновить не удалось. Повторите /мп отменить с тем же номером: очки повторно не изменятся, исходная причина сохранится."
-        await interaction.edit_original_response(content=content)
+        report = await database_call(self.service.store,'report',str(interaction.guild_id),number)
+        async def apply(current):
+            saved = await database_call(self.service.store,'cancel_report',str(current.guild_id),str(current.user.id),number,reason)
+            published = await self.service.update_cancelled(current.guild,saved)
+            return f'Отчёт #{number} отменён; начисления исключены.' + ('' if published else ' Карточку обновить не удалось. Повторите /мп отменить с тем же номером.')
+        if report['cancelled_at']:
+            await interaction.edit_original_response(content=await apply(interaction))
+            return
+        total = report['points']*len(report['members']) + (report['mvp_bonus'] if report['mvp_id'] else 0)
+        await interaction.edit_original_response(
+            content=f'Отмена отчёта #{number}: будет исключено **{total} баллов** у **{len(report["members"])} участников**.\nПричина: {discord.utils.escape_markdown(reason)}',
+            view=ConfirmAction(self.service.store,interaction,'manager',apply),allowed_mentions=discord.AllowedMentions.none())
 
 
 @app_commands.guild_only()
@@ -328,7 +335,8 @@ def install_commands(tree: app_commands.CommandTree, service: EventService, guil
             "Без выбора участника баллы получишь ты.", inline=False)
         embed.add_field(name="3 · Посмотри свои результаты", value=
             "`/баллы мои` — твои баллы за выбранную неделю.\n"
-            "`/баллы рейтинг` — результаты участников семьи.", inline=False)
+            "`/баллы рейтинг` — результаты участников семьи. `/баллы история` — начисления и отмены. "
+            "`/участник профиль` — общие результаты и MVP.", inline=False)
         embed.add_field(name="4 · Лови выгодные цены", value=
             "`/скупщик подписки` → отметь нужные товары → **Подтвердить**.\n"
             "Выбери порог обычной цены: 95–100% или максимум, для всех товаров или каждого отдельно. "

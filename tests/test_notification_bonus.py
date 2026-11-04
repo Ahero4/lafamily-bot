@@ -1,4 +1,5 @@
 import unittest
+from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -15,7 +16,9 @@ class NotificationBonusTests(unittest.IsolatedAsyncioTestCase):
         store.replace_price_subscriptions('1','456',['Медь'],{'Медь':'near'})
         report=parse_prices(EXAMPLE.replace('- Медь: $36 ($43)','- Медь: $60 ($72)'))
         message=SimpleNamespace(id=100,guild=SimpleNamespace(id=1),channel=SimpleNamespace(id=2,send=AsyncMock()))
-        dm=SimpleNamespace(send=AsyncMock())
+        dm_ids=count(1000)
+        dm=SimpleNamespace(send=AsyncMock(side_effect=lambda **kwargs:SimpleNamespace(
+            id=next(dm_ids),author=SimpleNamespace(id=789),channel=SimpleNamespace(id=50))))
         message.guild.get_member=lambda user_id: dm
         message.guild.fetch_member=AsyncMock(return_value=dm)
         message.channel.permissions_for=lambda member:SimpleNamespace(view_channel=True)

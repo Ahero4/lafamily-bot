@@ -8,6 +8,9 @@ from discord import app_commands
 
 from lafamily.config import Config
 from lafamily.modules.database_backups import DatabaseBackups, register_database_backups
+from lafamily.modules.insights import register_insights
+from lafamily.modules.planning import register_planning,SignupView
+from lafamily.modules.health import HealthService,register_health
 from lafamily.modules.announcements import AnnouncementService, AnnouncementCommands
 from lafamily.modules.release_updates import ReleaseUpdates, register_release_updates
 from lafamily.errors import UserError
@@ -69,12 +72,17 @@ class FamilyBot(discord.Client):
         register_price_commands(self.tree, self.prices, config.guild_id)
         self.backups = DatabaseBackups(self, store, config.guild_id)
         register_database_backups(self.tree, self.backups, config.guild_id)
+        register_insights(self.tree,self,store,config.guild_id)
+        register_planning(self.tree,self,store,config.guild_id)
+        self.health=HealthService(self,store,config.guild_id)
+        register_health(self.tree,self.health,config.guild_id)
 
     async def setup_hook(self):
         # Постоянные кнопки продолжают работать после перезапуска.
         self.add_view(EntryView(self.onboarding))
         self.add_view(ReviewView(self.onboarding))
         self.add_view(RecoveryView(self.onboarding))
+        self.add_view(SignupView(self.store))
         # setup_hook вызывается после авторизации, до Gateway и не повторяется при reconnect.
         # При сбое регистрации прекращаем запуск, чтобы не обслуживать устаревшую схему.
         try:
@@ -104,6 +112,8 @@ class FamilyBot(discord.Client):
                 log_error('Не удалось отправить результат восстановления БД', error)
         self.backups.start()
         self.announcements.start()
+        self.prices.queue.start()
+        self.health.start()
         await self.release_updates.announce()
 
     async def on_error(self, event_method: str, *args, **kwargs):
@@ -113,6 +123,8 @@ class FamilyBot(discord.Client):
             log_error(f"Необработанная ошибка события {event_method}", error)
 
     async def close(self):
+        await self.health.close()
+        await self.prices.queue.close()
         await self.backups.close()
         await self.announcements.close()
         self.events.close()

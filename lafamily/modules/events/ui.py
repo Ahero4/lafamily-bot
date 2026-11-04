@@ -8,6 +8,7 @@ import discord
 from discord.utils import escape_markdown
 
 from lafamily.errors import UserError
+from lafamily.async_database import database_call
 from lafamily.modules.events.models import Draft
 from lafamily.modules.events.time import display_date
 from lafamily.permissions import require_access_async
@@ -187,6 +188,17 @@ class ReportView(discord.ui.View):
                 self.finish()
                 await interaction.edit_original_response(content="Черновик отменён. Очки не начислялись.", embeds=[], view=None)
                 return
+            if action == 'allow_duplicate':
+                self.draft.enforce_duplicates = True
+                key, matches = await database_call(self.service.store, 'duplicate_report_key', self.draft)
+                if not matches:
+                    raise UserError('Похожих отчётов нет. Используйте обычное подтверждение.')
+                payload = self.payload()
+                payload['content'] = ('Вы разрешили отдельный отчёт при наличии похожих: '+
+                    ', '.join(f'#{n}' for n in matches)+'. Проверьте состав и нажмите «Подтвердить отчёт».\n'+payload['content'])
+                await interaction.edit_original_response(**payload)
+                self.draft.duplicate_ack = key
+                return
             if action == "reject_pending":
                 # Отклонение — отдельное явное действие организатора, а не побочный эффект сохранения.
                 await interaction.edit_original_response(content="Оставшиеся заявки отклонены. Проверьте подтверждённый состав и нажмите «Подтвердить отчёт».", embeds=[], view=self)
@@ -346,6 +358,10 @@ class ReportView(discord.ui.View):
     @discord.ui.button(label="Отменить черновик", custom_id="discard", style=discord.ButtonStyle.danger, row=1)
     async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.dispatch("discard", interaction)
+
+    @discord.ui.button(label='Разрешить похожий отчёт', custom_id='allow_duplicate', style=discord.ButtonStyle.secondary, row=1)
+    async def allow_duplicate(self, interaction, button):
+        await self.dispatch('allow_duplicate', interaction)
 
 
 

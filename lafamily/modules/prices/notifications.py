@@ -1,10 +1,14 @@
 """Личные уведомления при достижении выбранного порога обычной цены."""
+from datetime import datetime
+
 import discord
 
 from lafamily.async_database import database_call
 from lafamily.diagnostics import log_error
+from lafamily.modules.events.time import MOSCOW
 from .parser import LIMITS
 from .delivery_reports import send_admin_delivery_report
+from .dm_cleanup import content_hash, price_dm_revision
 
 
 def bonus_price_text(report, item, price):
@@ -26,6 +30,9 @@ def bonus_price_text(report, item, price):
 
 
 async def notify_maximum_prices(store, message, report):
+    revision = price_dm_revision(report)
+    if not await database_call(store, 'activate_price_dm_revision', str(message.guild.id), str(message.id), revision):
+        return
     maxima = {}
     near = {}
     for item, limits in LIMITS.items():
@@ -52,6 +59,7 @@ async def notify_maximum_prices(store, message, report):
         for alert in users:
             user = alert['user_id']
             sending = False
+            sent = None
             state, error_type = 'sent', None
             try:
                 # Кэш без Members Intent может содержать прежние роли участника.
@@ -60,10 +68,13 @@ async def notify_maximum_prices(store, message, report):
                     state, error_type = 'forbidden', 'ChannelAccessDenied'
                 else:
                     sending = True
-                    await member.send(
-                        content=f'🏆 **{item}: ${price}{bonus}** — {reason} '
-                                f'Скупщик: **{places}**.\n'
-                                f'https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}',
+                    local_time = datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M:%S МСК')
+                    content = (f'🏆 **{item}: ${price}{bonus}** — {reason} '
+                               f'Скупщик: **{places}**.\n'
+                               f'Отправлено: **{local_time}**.\n'
+                               f'https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}')
+                    sent = await member.send(
+                        content=content,
                         allowed_mentions=discord.AllowedMentions.none())
             except Exception as error:
                 # Включая закрытые DM, уход с сервера, HTTP- и сетевые ошибки.
@@ -80,5 +91,12 @@ async def notify_maximum_prices(store, message, report):
                 log_error('Не удалось доставить личное уведомление о цене; автоповтор отключён', error)
             # Успех DM и состояние журнала разделены: ошибка БД не означает ошибку доставки.
             await database_call(store, 'finish_price_delivery', alert['attempt_id'], state, error_type)
+            if sent is not None:
+                try:
+                    await database_call(store, 'remember_price_dm', alert['attempt_id'], str(sent.author.id),
+                                        str(sent.channel.id), str(sent.id), revision, content_hash(content))
+                except Exception as error:
+                    # Сбой учёта не превращает успешно отправленное DM в ошибку доставки.
+                    log_error('Не удалось сохранить ID личного уведомления скупщика для очистки', error)
     if alerts:
         await send_admin_delivery_report(store, message, alerts[0]['run_id'])

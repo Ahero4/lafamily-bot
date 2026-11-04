@@ -127,7 +127,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
             bot.tree.sync = AsyncMock(return_value=[])
             with patch.object(bot, "add_view") as add_view:
                 await bot.setup_hook()
-                self.assertEqual(add_view.call_count, 3)
+                self.assertEqual(add_view.call_count, 4)
             bot.tree.sync.assert_awaited_once_with(guild=discord.Object(id=int(GUILD)))
             await bot.on_ready()
             await bot.on_ready()
@@ -150,11 +150,11 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
         try:
             commands = bot.tree.get_commands(guild=discord.Object(id=int(GUILD)))
             data = {command.name: command.to_dict(bot.tree) for command in commands}
-            self.assertEqual(set(data), {"мп", "баллы", "бот", "помощь", "команды", "инфо", "ники", "скупщик", "коровник", "старт", "заявки", "анонс"})
+            self.assertEqual(set(data), {"мп", "баллы", "бот", "помощь", "команды", "инфо", "ники", "скупщик", "коровник", "старт", "заявки", "анонс", "участник"})
             self.assertEqual({item["name"] for item in data["инфо"]["options"]}, {"общее", "фарм", "админ"})
             self.assertEqual({item["name"] for item in data["старт"]["options"]}, {"участник", "админ"})
             event = data["мп"]["options"]
-            self.assertEqual({item["name"] for item in event}, {"создать", "виды", "посмотреть", "отменить"})
+            self.assertEqual({item["name"] for item in event}, {"создать", "виды", "посмотреть", "отменить", "запись"})
             kinds = next(item for item in event if item["name"] == "виды")["options"]
             self.assertEqual({item["name"] for item in kinds}, {"список", "добавить", "отключить"})
             add = next(item for item in kinds if item["name"] == "добавить")

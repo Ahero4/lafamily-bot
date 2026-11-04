@@ -219,7 +219,7 @@ class OnboardingService:
                 state = 'failed'
             except Exception as error:
                 state = 'uncertain' if sending else 'failed'
-                log_error('Доставка решения по заявке не подтверждена; повтор DM отключён', error)
+                log_error('Доставка решения по заявке не подтверждена; повтор ЛС отключён', error)
             await database_call(self.store, 'finish_onboarding_notification', str(message.id), state)
         row = await database_call(self.store, 'onboarding_request', str(message.id))
         state = row['notification_state']

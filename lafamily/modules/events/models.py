@@ -27,3 +27,5 @@ class Draft:
     win_enabled: bool = False
     available_win_bonus: int = 0
     available_mvp_bonus: int = 0
+    duplicate_ack: str = ''
+    enforce_duplicates: bool = False

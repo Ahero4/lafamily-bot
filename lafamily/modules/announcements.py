@@ -14,6 +14,7 @@ from lafamily.diagnostics import log_error
 from lafamily.errors import UserError
 from lafamily.modules.events.time import MOSCOW, timestamp, display_date
 from lafamily.permissions import require_access_async
+from lafamily.modules.planning import SignupView
 
 DAYS = ('пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс')
 
@@ -167,8 +168,13 @@ class AnnouncementService:
                         if not claimed:
                             continue
                         try:
+                            planned=await database_call(self.store,'create_planned_event',str(self.guild_id),'0',
+                                f'announcement:{row["id"]}:{timestamp(start)}',str(channel.id),row['name'][:80],timestamp(start),100,now=now)
+                            embed.add_field(name='Запись на МП',value=f'Участвуйте кнопками ниже. Состав: /мп запись состав номер:{planned["id"]}. Мест: 100.',inline=False)
                             message = await channel.send(content=f'<@&{role.id}>', embed=embed,
+                                view=SignupView(self.store),
                                 allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=[role], replied_user=False))
+                            await database_call(self.store,'bind_planned_message',str(self.guild_id),planned['id'],str(message.id))
                             await database_call(self.store, 'finish_announcement', row['id'], timestamp(start), 'sent', str(message.id))
                         except Exception:
                             await database_call(self.store, 'finish_announcement', row['id'], timestamp(start), 'uncertain', None)
