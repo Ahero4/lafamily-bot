@@ -66,7 +66,8 @@ class PriceDmRetentionTests(unittest.IsolatedAsyncioTestCase):
             clock.now.return_value = local
             await self.post()
             clock.now.assert_called_once_with(MOSCOW)
-        self.assertIn('Отправлено: **04.11.2026 00:05:30 МСК**.', self.messages[0].content)
+        self.assertIn('· **Скупщик** **№1** · максимум', self.messages[0].content)
+        self.assertIn('Отправлено: **00:05** 04.11.2026 МСК.', self.messages[0].content)
 
         self.assertEqual(await self.post(), 'already_done')
         self.assertEqual(await self.post(100, EXAMPLE), 'updated')

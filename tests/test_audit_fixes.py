@@ -336,7 +336,7 @@ class AuditAsyncTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(status=404,reason='Not found'),'left server'))
         await OnboardingService(self.store).complete(interaction,message)
         footer = message.edit.call_args.kwargs['embed'].footer.text
-        self.assertEqual(footer,'Утверждено администратором')
+        self.assertEqual(footer,'Заявка утверждена')
         self.assertNotIn(A,footer)
         self.assertIsNone(message.edit.call_args.kwargs['view'])
         member.send.assert_awaited_once()
@@ -346,7 +346,7 @@ class AuditAsyncTests(unittest.IsolatedAsyncioTestCase):
         service,member,interaction,message,_ = self.onboarding()
         self.store.db.execute("UPDATE onboarding_requests SET approved=-1,actor_id=NULL,notification_state='legacy' WHERE message_id=?",(M,))
         await service.complete(interaction,message)
-        self.assertEqual(message.edit.call_args.kwargs['embed'].footer.text,'Отклонено администратором')
+        self.assertEqual(message.edit.call_args.kwargs['embed'].footer.text,'Заявка отклонена')
         member.send.assert_not_awaited()
         member.add_roles.assert_not_awaited()
 

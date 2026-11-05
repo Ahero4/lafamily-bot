@@ -1,4 +1,4 @@
-"""Постоянная форма получения роли и проверка заявки администратором."""
+"""Постоянная форма получения роли и проверка заявки организаторами и руководством."""
 from lafamily.command_groups import command_group
 import asyncio
 import re
@@ -42,7 +42,7 @@ class IdentityModal(discord.ui.Modal):
         name, static, nickname = validate_identity(str(self.name), str(self.static))
         service = self.service
         if self.request:
-            await require_access_async(interaction, service.store, 'admin')
+            await require_access_async(interaction, service.store, 'organizer')
             async with service.lock:
                 row = await database_call(service.store, 'onboarding_request', str(self.message.id))
                 if not row or row['guild_id'] != str(interaction.guild_id):
@@ -87,7 +87,7 @@ class IdentityModal(discord.ui.Modal):
             except Exception as error:
                 # Постоянная кнопка восстановит связь по номеру заявки в карточке.
                 log_error('Карточка заявки отправлена; привязка будет восстановлена при проверке', error)
-            await interaction.edit_original_response(content='Заявка отправлена! Дождитесь проверки администратором.')
+            await interaction.edit_original_response(content='Заявка отправлена! Дождитесь проверки организатором, руководством или администратором.')
 
 
 class EntryView(discord.ui.View):
@@ -110,7 +110,7 @@ class ReviewView(EntryView):
 
     @discord.ui.button(label='Проверить / исправить и утвердить', style=discord.ButtonStyle.success, custom_id='onboarding:review')
     async def review(self, interaction, button):
-        await require_access_async(interaction, self.service.store, 'admin')
+        await require_access_async(interaction, self.service.store, 'organizer')
         async with self.service.lock:
             row = await self.service.request_for_message(interaction)
             if row['approved']:
@@ -123,7 +123,7 @@ class ReviewView(EntryView):
 
     @discord.ui.button(label='Отклонить заявку', style=discord.ButtonStyle.danger, custom_id='onboarding:reject')
     async def reject(self, interaction, button):
-        await require_access_async(interaction, self.service.store, 'admin')
+        await require_access_async(interaction, self.service.store, 'organizer')
         row = await self.service.request_for_message(interaction)
         if row['approved']:
             raise UserError('Заявка уже обработана или не найдена.')
@@ -142,7 +142,7 @@ class RejectModal(discord.ui.Modal, title='Отклонить заявку'):
 
     async def on_submit(self, interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await require_access_async(interaction, self.service.store, 'admin')
+        await require_access_async(interaction, self.service.store, 'organizer')
         reason = str(self.reason).strip()
         if not reason:
             raise UserError('Укажите причину отказа.')
@@ -167,7 +167,7 @@ class RecoveryView(discord.ui.View):
     @discord.ui.button(label='Обновить карточку / уведомление', custom_id='onboarding:repair')
     async def repair(self, interaction, button):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await require_access_async(interaction, self.service.store, 'admin')
+        await require_access_async(interaction, self.service.store, 'organizer')
         async with self.service.lock:
             row = await self.service.request_for_message(interaction)
             if not row['approved']:
@@ -244,7 +244,7 @@ class OnboardingService:
     @staticmethod
     async def decision_footer(interaction, row):
         approved = row['approved'] == 1
-        fallback = 'Утверждено администратором' if approved else 'Отклонено администратором'
+        fallback = 'Заявка утверждена' if approved else 'Заявка отклонена'
         if not row['actor_id']:
             return fallback
         try:
@@ -259,7 +259,7 @@ class OnboardingService:
             return f"{'Утвердил' if approved else 'Отклонил'}: {actor.display_name}"
         except Exception as error:
             # Недоступность имени не должна мешать обновлению уже обработанной заявки.
-            log_error('Не удалось получить имя администратора для карточки заявки', error)
+            log_error('Не удалось получить имя автора решения для карточки заявки', error)
             return fallback
 
     @staticmethod
@@ -302,5 +302,5 @@ def register_onboarding(tree, service, guild_id):
             if not (permissions.view_channel and permissions.send_messages and permissions.embed_links):
                 raise UserError('Боту нужны просмотр, отправка сообщений и вставка ссылок в обоих каналах.')
         await database_call(service.store, 'configure_onboarding', str(interaction.guild_id), str(entry.id), str(review.id), str(role.id))
-        await entry.send('**Добро пожаловать!** Нажмите кнопку, введите имя, фамилию и Static ID, затем отправьте заявку. После проверки администратором вы получите роль и никнейм.', view=EntryView(service))
+        await entry.send('**Добро пожаловать!** Нажмите кнопку, введите имя, фамилию и Static ID, затем отправьте заявку. После одобрения заявки организатором, руководством или администратором вы получите роль и никнейм.', view=EntryView(service))
         await interaction.edit_original_response(content=f'Форма опубликована в {entry.mention}, заявки поступают в {review.mention}. Выдаваемая роль: {role.mention}.', allowed_mentions=discord.AllowedMentions.none())

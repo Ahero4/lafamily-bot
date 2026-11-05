@@ -66,10 +66,10 @@ async def notify_maximum_prices(store, message, report):
                     state, error_type = 'forbidden', 'ChannelAccessDenied'
                 else:
                     sending = True
-                    local_time = datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M:%S МСК')
+                    sent_at = datetime.now(MOSCOW).strftime('**%H:%M** %d.%m.%Y МСК')
                     content = (f'🏆 **{item}: ${price}{bonus}** — {reason} '
                                f'Скупщик: **{places}**.\n'
-                               f'Отправлено: **{local_time}**.\n'
+                               f'Отправлено: {sent_at}.\n'
                                f'https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}')
                     await member.send(
                         content=content,

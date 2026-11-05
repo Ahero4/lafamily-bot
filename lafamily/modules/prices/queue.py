@@ -1,5 +1,6 @@
 """Сохраняемая очередь компактных ЛС. Отправленные задачи не повторяются."""
 import asyncio
+import re
 from datetime import datetime
 from types import SimpleNamespace
 import discord
@@ -10,6 +11,9 @@ from lafamily.modules.events.time import MOSCOW
 from .parser import LIMITS, price_dm_revision
 from .notifications import bonus_price_text
 from .delivery_reports import send_admin_delivery_report
+
+
+BUYER_NUMBERS = re.compile(r' · (№[123](?:, №[123])*) · ')
 
 
 async def enqueue_notifications(store,message,report):
@@ -89,8 +93,12 @@ class PriceQueue:
             else:
                 if not await database_call(self.store,'current_price_job',job):
                     await database_call(self.store,'finish_price_job',job['id'],'failed','ExpiredPrice');return
-                content=(job['body']+'\nОтправлено: **'+datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M:%S МСК')+'**.\n'+
-                    f'https://discord.com/channels/{job["guild_id"]}/{job["channel_id"]}/{job["source_id"]}')
+                body = BUYER_NUMBERS.sub(r' · **Скупщик** **\1** · ', job['body'])
+                sent_at = datetime.now(MOSCOW).strftime('**%H:%M** %d.%m.%Y МСК')
+                content = (
+                    f"{body}\nОтправлено: {sent_at}.\n"
+                    f'https://discord.com/channels/{job["guild_id"]}/{job["channel_id"]}/{job["source_id"]}'
+                )
                 sending=True
                 await member.send(content=content, allowed_mentions=discord.AllowedMentions.none())
             message=SimpleNamespace(id=int(job['source_id']),guild=channel.guild,channel=channel)
