@@ -186,8 +186,6 @@ class InsightsStore:
         for row in self.db.execute('''SELECT a.id,a.state FROM price_delivery_attempts a JOIN price_delivery_runs r ON r.id=a.run_id
             WHERE r.guild_id=? AND a.state<>'sent' ORDER BY a.id DESC LIMIT 20''',(guild_id,)):
             result.append({'kind':'delivery','id':row['id'],'state':row['state'],'safe':False})
-        for row in self.stale_price_dms(guild_id)[:20]:
-            result.append({'kind':'cleanup','id':row['attempt_id'],'state':row['cleanup_error'] or 'ожидает','safe':True})
         for row in self.db.execute("SELECT message_id,notification_state FROM onboarding_requests WHERE guild_id=? AND (message_id LIKE 'pending:%' OR (approved<>0 AND notification_state IN ('pending','sending','failed','uncertain'))) LIMIT 20",(guild_id,)):
             result.append({'kind':'onboarding','id':row['message_id'],'state':row['notification_state'],'safe':False})
         for row in self.db.execute('SELECT id FROM planned_events WHERE guild_id=? AND message_id IS NULL ORDER BY id DESC LIMIT 20',(guild_id,)):

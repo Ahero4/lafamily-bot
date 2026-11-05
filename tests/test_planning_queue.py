@@ -12,7 +12,7 @@ from lafamily.errors import UserError
 from lafamily.modules.events.time import timestamp
 from lafamily.modules.prices.parser import parse_prices
 from lafamily.modules.prices.queue import PriceQueue,enqueue_notifications
-from lafamily.modules.prices.dm_cleanup import price_dm_revision
+from lafamily.modules.prices.parser import price_dm_revision
 from lafamily.modules.health import HealthService
 from lafamily.confirmations import ConfirmAction
 

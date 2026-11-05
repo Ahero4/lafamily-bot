@@ -10,9 +10,8 @@ import discord
 from lafamily.async_database import database_call
 from lafamily.diagnostics import log_error
 from lafamily.errors import UserError
-from .parser import extract_prices
+from .parser import extract_prices, price_dm_revision
 from .notifications import notify_maximum_prices
-from .dm_cleanup import cleanup_price_dms, price_dm_revision
 from .queue import PriceQueue,enqueue_notifications
 from .formatting import RENDER_VERSION, render_prices
 
@@ -77,7 +76,7 @@ class PriceService:
                     raise UserError('Предыдущая отправка этого сообщения не подтверждена. Исходник сохранён; '
                                     'автоповтор отключён, чтобы не создавать дубли. Проверьте канал и журнал ошибок.')
                 if existing['fingerprint'] == fingerprint:
-                    await self.maintain_subscriber_dms(message, report, notify=False)
+                    await self.record_price_update(message, report, notify=False)
                     await self.cleanup_channel(message)
                     return 'already_done'
                 # Если источник отредактирован, обновляем своё сообщение вместо новой публикации.
@@ -88,7 +87,7 @@ class PriceService:
                 # Очистка старых embed-карточек обязательна при переходе на Components V2.
                 await result.edit(content=None, embeds=[], **payload)
                 await database_call(self.store, 'save_price_publication', guild_id, source_id, existing['result_id'], fingerprint)
-                await self.maintain_subscriber_dms(message, report, notify=notify)
+                await self.record_price_update(message, report, notify=notify)
                 await self.cleanup_channel(message)
                 return 'updated'
             claimed = await database_call(self.store, 'claim_price_publication', guild_id, str(message.channel.id), source_id, fingerprint)
@@ -104,7 +103,7 @@ class PriceService:
                 log_error('Не подтверждена публикация сравнения цен; исходник сохранён', error)
                 raise UserError('Отправка сравнения не подтверждена. Исходное сообщение сохранено; повтор не выполняется во избежание дублей.') from error
             await database_call(self.store, 'save_price_publication', guild_id, source_id, str(result.id), fingerprint)
-            await self.maintain_subscriber_dms(message, report, notify=notify)
+            await self.record_price_update(message, report, notify=notify)
             await self.cleanup_channel(message)
             return 'published'
 
@@ -149,22 +148,15 @@ class PriceService:
         except discord.DiscordException as error:
             log_error('Не удалось завершить очистку канала цен', error)
 
-    async def maintain_subscriber_dms(self, message, report, *, notify):
-        # Даже без новых сигналов (или при ручной обработке) прежний отчёт уже устарел.
-        # ID и очередь удаления сохраняются в SQLite и переживают перезапуск.
-        if not await database_call(self.store, 'activate_price_dm_revision', str(self.guild_id),
-                                   str(message.id), price_dm_revision(report)):
+    async def record_price_update(self, message, report, *, notify):
+        guild_id, source_id = str(self.guild_id), str(message.id)
+        revision = price_dm_revision(report)
+        if not await database_call(self.store, 'activate_price_dm_revision', guild_id, source_id, revision):
             return
-        await database_call(self.store,'save_price_history',str(self.guild_id),str(message.id),price_dm_revision(report),report)
-        try:
-            if notify:
-                await enqueue_notifications(self.store,message,report)
-                await self.queue.drain(cleanup=False)
-        finally:
-            try:
-                await cleanup_price_dms(self.client, self.store, self.guild_id)
-            except Exception as error:
-                log_error('Не удалось завершить очистку ЛС скупщика; повтор при следующем отчёте', error)
+        await database_call(self.store, 'save_price_history', guild_id, source_id, revision, report)
+        if notify:
+            await enqueue_notifications(self.store, message, report)
+            await self.queue.drain()
 
     async def notify_subscribers(self, message, report):
         # Сбой личного уведомления не меняет результат уже опубликованного сравнения цен.

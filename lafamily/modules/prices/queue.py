@@ -7,9 +7,8 @@ from discord.ext import tasks
 from lafamily.async_database import database_call
 from lafamily.diagnostics import log_error
 from lafamily.modules.events.time import MOSCOW
-from .parser import LIMITS
+from .parser import LIMITS, price_dm_revision
 from .notifications import bonus_price_text
-from .dm_cleanup import cleanup_price_dms,content_hash,price_dm_revision
 from .delivery_reports import send_admin_delivery_report
 
 
@@ -60,7 +59,7 @@ class PriceQueue:
             if self.client.is_ready():await self.drain()
         except Exception as error:log_error('Ошибка очереди ЛС скупщика',error)
 
-    async def drain(self,*,cleanup=True):
+    async def drain(self):
         async with self.lock:
             if not self.recovered:
                 await database_call(self.store,'recover_price_jobs',str(self.guild_id));self.recovered=True
@@ -74,13 +73,12 @@ class PriceQueue:
                     channel=await self.client.fetch_channel(int(run['channel_id']))
                     await send_admin_delivery_report(self.store,SimpleNamespace(id=int(run['source_id']),guild=channel.guild,channel=channel),run['id'])
                 except Exception as error:log_error('Не завершён отчёт очереди ЛС',error)
-            if cleanup:
-                await cleanup_price_dms(self.client,self.store,self.guild_id)
 
     async def deliver(self,job):
         if not await database_call(self.store,'current_price_job',job):
             await database_call(self.store,'finish_price_job',job['id'],'failed','ExpiredPrice');return
-        sending=False;sent=None;message=None
+        sending = False
+        message = None
         state,error_type='sent',None
         try:
             channel=await self.client.fetch_channel(int(job['channel_id']))
@@ -94,7 +92,7 @@ class PriceQueue:
                 content=(job['body']+'\nОтправлено: **'+datetime.now(MOSCOW).strftime('%d.%m.%Y %H:%M:%S МСК')+'**.\n'+
                     f'https://discord.com/channels/{job["guild_id"]}/{job["channel_id"]}/{job["source_id"]}')
                 sending=True
-                sent=await member.send(content=content,allowed_mentions=discord.AllowedMentions.none())
+                await member.send(content=content, allowed_mentions=discord.AllowedMentions.none())
             message=SimpleNamespace(id=int(job['source_id']),guild=channel.guild,channel=channel)
         except Exception as error:
             error_type=type(error).__name__
@@ -106,10 +104,6 @@ class PriceQueue:
             else:state='failed'
             log_error('Ошибка доставки ЛС из очереди',error)
         await database_call(self.store,'finish_price_job',job['id'],state,error_type)
-        if sent:
-            try:
-                await database_call(self.store,'remember_price_dm',job['attempt_ids'][0],str(sent.author.id),str(sent.channel.id),str(sent.id),job['revision'],content_hash(content))
-            except Exception as error:log_error('Не сохранён ID ЛС скупщика',error)
         if message:
             run=await database_call(self.store,'price_job_run',job['id'])
             summary=await database_call(self.store,'price_delivery_summary',job['guild_id'],run)

@@ -15,7 +15,6 @@ from lafamily.errors import UserError
 from lafamily.permissions import require_access_async
 from lafamily.modules.events.ui import report_embed
 from lafamily.modules.events.time import timestamp
-from lafamily.modules.prices.dm_cleanup import cleanup_price_dms
 
 
 class HealthService:
@@ -130,26 +129,24 @@ def register_health(tree,service,guild_id):
         await interaction.edit_original_response(content=text[:1750]+'\nПолная диагностика — в приложенном файле.',
             attachments=[discord.File(BytesIO(text.encode('utf-8-sig')),filename='diagnostics.txt')],allowed_mentions=discord.AllowedMentions.none())
 
-    @group.command(name='операции',description='Незавершённые публикации, доставки и очистки',extras={'access':'admin'})
+    @group.command(name='операции',description='Незавершённые публикации, заявки и доставки',extras={'access':'admin'})
     @app_commands.rename(page='страница')
     async def operations(interaction:discord.Interaction,page:app_commands.Range[int,1,100]=1):
         await interaction.response.defer(ephemeral=True)
         await require_access_async(interaction,store,'admin')
         rows=await database_call(store,'unfinished_operations',str(interaction.guild_id))
-        labels={'report':'Отчёт','prices':'Сводка цен','delivery':'ЛС','cleanup':'Очистка ЛС','signup':'Карточка записи','onboarding':'Заявка'}
+        labels={'report':'Отчёт','prices':'Сводка цен','delivery':'ЛС','signup':'Карточка записи','onboarding':'Заявка'}
         lines=[f'{labels.get(r["kind"],r["kind"])} #{r["id"]}: {r["state"]}'+(' · восстановление доступно' if r['safe'] else ' · ручная проверка') for r in rows[(page-1)*15:page*15]]
         await interaction.edit_original_response(content=f'**Операции • страница {page} • по 15 записей**\n'+('\n'.join(lines) or 'На этой странице записей нет.')+
             '\nВосстановление: /бот восстановить-операцию. Заявки: кнопка восстановления в карточке. Сводки цен и неоднозначные ЛС вслепую не повторяются.')
 
-    @group.command(name='восстановить-операцию',description='Обновить карточку отчёта или повторить очистку ЛС',extras={'access':'admin'})
+    @group.command(name='восстановить-операцию',description='Обновить или восстановить карточку отчёта',extras={'access':'admin'})
     @app_commands.rename(kind='операция',number='номер')
-    @app_commands.choices(kind=[app_commands.Choice(name='Карточка отчёта',value='report'),app_commands.Choice(name='Очистка ЛС скупщика',value='cleanup')])
+    @app_commands.choices(kind=[app_commands.Choice(name='Карточка отчёта',value='report')])
     async def recover(interaction:discord.Interaction,kind:str,number:app_commands.Range[int,1]=1):
         await interaction.response.defer(ephemeral=True)
         await require_access_async(interaction,store,'admin')
-        if kind=='report':text=await service.recover_report(interaction.guild,number)
-        elif kind=='cleanup':
-            await cleanup_price_dms(service.client,store,interaction.guild_id)
-            text='Очистка выполнена для всех устаревших ЛС с сохранёнными ID. Ошибки остались в /бот операции.'
-        else:raise UserError('Неизвестная операция.')
+        if kind != 'report':
+            raise UserError('Доступно восстановление карточки отчёта.')
+        text = await service.recover_report(interaction.guild, number)
         await interaction.edit_original_response(content=text)

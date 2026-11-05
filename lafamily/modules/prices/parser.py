@@ -1,7 +1,8 @@
 """Разбор только полного отчёта; очистка выделенного канала выполняется отдельно."""
+import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 LIMITS = json.loads(Path(__file__).with_name('limits.json').read_text(encoding='utf-8-sig'))
@@ -27,6 +28,11 @@ class PriceReport:
     buyers: dict[int, dict[str, Price]]
     products: dict[str, Price]
     stamp: str | None
+
+
+def price_dm_revision(report: PriceReport) -> str:
+    """Идентификатор редакции цен для проверки задач рассылки."""
+    return hashlib.sha256(json.dumps(asdict(report), ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
 def amount(value):

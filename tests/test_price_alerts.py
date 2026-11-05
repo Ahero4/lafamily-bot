@@ -115,8 +115,7 @@ class PriceAlertTests(unittest.IsolatedAsyncioTestCase):
         self.channel.guild=self.message.guild
         client.fetch_channel=AsyncMock(return_value=self.channel)
         service = PriceService(client, self.store, 1)
-        with patch.object(service, 'require_channel'), patch.object(service, 'cleanup_channel', new=AsyncMock()), \
-                patch('lafamily.modules.prices.service.cleanup_price_dms', new=AsyncMock()):
+        with patch.object(service, 'require_channel'), patch.object(service, 'cleanup_channel', new=AsyncMock()):
             self.assertEqual(await service.process(self.message, notify=False), 'published')
             self.assertEqual(self.channel.send.await_count, 1)
             self.dm.send.assert_not_awaited()
