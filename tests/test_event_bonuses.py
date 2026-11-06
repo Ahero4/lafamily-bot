@@ -106,10 +106,10 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
     def interaction(self,role='organizer'):
         return SimpleNamespace(guild_id=int(G),channel_id=int(C),user=SimpleNamespace(id=int(A),roles=[SimpleNamespace(id=role)]),guild=SimpleNamespace(),channel=SimpleNamespace(get_partial_message=MagicMock(return_value=SimpleNamespace(edit=AsyncMock()))),permissions=discord.Permissions.none(),response=SimpleNamespace(defer=AsyncMock()),edit_original_response=AsyncMock())
 
-    async def test_only_manager_updates_type_and_preserves_id(self):
+    async def test_organizer_can_add_and_update_type(self):
         with self.assertRaises(UserError):
-            await self.commands.add_type.callback(self.commands,self.interaction(),'МП',10,15,7)
-        await self.commands.add_type.callback(self.commands,self.interaction('manager'),'МП',10,15,7)
+            await self.commands.add_type.callback(self.commands,self.interaction('member'),'МП',10,15,7)
+        await self.commands.add_type.callback(self.commands,self.interaction(),'МП',10,15,7)
         await self.commands.add_type.callback(self.commands,self.interaction('manager'),'МП',win=20)
         kind=self.store.event_type(G,self.kind)
         self.assertEqual((kind['points'],kind['win_bonus'],kind['mvp_bonus']),(10,20,7))
@@ -117,6 +117,10 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         choices=await self.commands.type_name_autocomplete(self.interaction('manager'),'М')
         self.assertEqual(choices[0].value,'МП')
         self.assertNotIn('бонусы',[c.name for c in self.commands.commands])
+        await self.commands.add_type.callback(self.commands,self.interaction(),'Капт',12)
+        self.assertEqual({row['name']: row['points'] for row in self.store.types(G)}, {'МП': 10, 'Капт': 12})
+        with self.assertRaises(UserError):
+            await self.commands.disable_type.callback(self.commands,self.interaction(),str(self.kind))
 
     async def test_outcome_required_in_view_only_when_enabled(self):
         self.store.configure_event_bonuses(G,A,self.kind,True,15,7)

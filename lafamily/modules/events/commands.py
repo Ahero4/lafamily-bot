@@ -106,12 +106,12 @@ class EventCommands(app_commands.Group):
         types = await database_call(self.service.store, "types", str(interaction.guild_id))
         content = "\n".join(f"{escape_markdown(kind['name'])} — {kind['points']} очк.; итог: {'вкл' if kind['win_enabled'] else 'выкл'}, победа +{kind['win_bonus']}, MVP +{kind['mvp_bonus']}" for kind in types)
         if len(content) <= 1800:
-            await interaction.edit_original_response(content=content or "Виды МП ещё не настроены. Руководство может добавить их через /мп виды добавить.")
+            await interaction.edit_original_response(content=content or "Виды МП ещё не настроены. Организаторы и руководство могут добавить их через /мп виды добавить.")
         else:
             raw = "\n".join(f"{kind['name']} — {kind['points']} очк." for kind in types)
             await interaction.edit_original_response(content="Список видов МП:", attachments=[discord.File(BytesIO(raw.encode("utf-8")), filename="event-types.txt")])
 
-    @app_commands.command(name="добавить", description="Добавить вид МП или изменить его ставки", extras={"access": "manager"})
+    @app_commands.command(name="добавить", description="Добавить вид МП или изменить его ставки", extras={"access": "organizer"})
     @app_commands.rename(name="название", points="очки", win="очки-победы", mvp="очки-mvp")
     @app_commands.describe(name="Выберите существующее название для изменения или введите новое",
                            points="Базовые очки; обязательны для нового вида, иначе сохраняются",
@@ -122,7 +122,7 @@ class EventCommands(app_commands.Group):
                        win: app_commands.Range[int, 0, 1000000] | None = None,
                        mvp: app_commands.Range[int, 0, 1000000] | None = None):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        await require_access_async(interaction, self.service.store, "manager")
+        await require_access_async(interaction, self.service.store, "organizer")
         kind = await database_call(self.service.store, "set_type", str(interaction.guild_id),
                                    str(interaction.user.id), name, points, win, mvp)
         await interaction.edit_original_response(content=(
