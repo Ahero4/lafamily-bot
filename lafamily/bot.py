@@ -108,6 +108,10 @@ class FamilyBot(discord.Client):
         if not self.backups.restoring:
             await self.reaction_roles.handle(payload)
 
+    async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
+        if not self.backups.restoring:
+            await self.reaction_roles.handle(payload, granting=False)
+
     async def on_ready(self):
         logger.info("LaFamily запущен: %s", self.user)
         if self.startup_notice:
@@ -122,6 +126,7 @@ class FamilyBot(discord.Client):
         self.announcements.start()
         self.prices.queue.start()
         self.health.start()
+        await self.reaction_roles.upgrade_card()
         await self.release_updates.announce()
 
     async def on_error(self, event_method: str, *args, **kwargs):

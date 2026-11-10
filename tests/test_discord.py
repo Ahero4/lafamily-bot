@@ -154,7 +154,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
             role_setup, = data["роль"]["options"]
             self.assertEqual(role_setup["name"], "выдача")
             self.assertEqual([item["name"] for item in role_setup["options"]],
-                             ["канал", "роль", "эмодзи-получения", "эмодзи-снятия", "id-сообщения"])
+                             ["канал", "роль", "эмодзи-получения", "id-сообщения"])
             self.assertTrue(all(item["required"] for item in role_setup["options"][:-1]))
             self.assertFalse(role_setup["options"][-1].get("required", False))
             self.assertEqual({item["name"] for item in data["инфо"]["options"]}, {"общее", "фарм", "админ"})

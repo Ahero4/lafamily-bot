@@ -640,15 +640,19 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
         row = self.db.execute('SELECT * FROM reaction_role_settings WHERE guild_id=?', (guild_id,)).fetchone()
         return dict(row) if row else None
 
-    def configure_reaction_role(self, guild_id, actor_id, channel_id, message_id, role_id, grant_emoji, revoke_emoji):
+    def configure_reaction_role(self, guild_id, actor_id, channel_id, message_id, role_id, grant_emoji):
         with self.transaction():
             self.ensure_channel_separation(guild_id, channel_id)
             self.db.execute('''INSERT INTO reaction_role_settings VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id)
                 DO UPDATE SET channel_id=excluded.channel_id,message_id=excluded.message_id,role_id=excluded.role_id,
                     grant_emoji=excluded.grant_emoji,revoke_emoji=excluded.revoke_emoji''',
-                (guild_id, channel_id, message_id, role_id, grant_emoji, revoke_emoji))
+                (guild_id, channel_id, message_id, role_id, grant_emoji, ''))
             self.audit(guild_id, actor_id, 'reaction_role.configured',
                        {'channel_id': channel_id, 'message_id': message_id, 'role_id': role_id})
+
+    def finish_reaction_role_upgrade(self, guild_id, message_id):
+        self.db.execute("UPDATE reaction_role_settings SET revoke_emoji='' WHERE guild_id=? AND message_id=?",
+                        (guild_id, message_id))
 
     def close(self):
         self.db.close()
