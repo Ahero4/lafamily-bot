@@ -443,7 +443,8 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
             "SELECT item FROM price_subscriptions WHERE guild_id=? AND user_id=? ORDER BY item",
             (guild_id, user_id))]
 
-    def claim_price_alerts(self, guild_id: str, source_id: str, maximum_items: list[str], near_items=None):
+    def claim_price_alerts(self, guild_id: str, source_id: str, maximum_items: list[str], near_items=None,
+                           *, include_existing_matches=False):
         # Флаг сохраняется ДО отправки: неоднозначный сетевой сбой не вызывает повторных тегов.
         # Старые отчёты не сбрасывают флаги текущих цен при ручной обработке.
         with self.transaction():
@@ -458,12 +459,17 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
                             (guild_id, source_id))
             subscriptions = self.db.execute("SELECT * FROM price_subscriptions WHERE guild_id=?", (guild_id,)).fetchall()
             alerts = []
+            new_recipients = set()
             for row in subscriptions:
-                at_maximum = row['item'] in ((near_items or []) if row['threshold'] == 'near' else maximum_items)
-                if at_maximum and not row['notified']:
+                matches_threshold = row['item'] in ((near_items or []) if row['threshold'] == 'near' else maximum_items)
+                if matches_threshold and (include_existing_matches or not row['notified']):
                     alerts.append({'user_id': row['user_id'], 'item': row['item'], 'threshold': row['threshold']})
+                    if not row['notified']:
+                        new_recipients.add(row['user_id'])
                 self.db.execute("UPDATE price_subscriptions SET notified=? WHERE guild_id=? AND user_id=? AND item=?",
-                                (int(at_maximum), guild_id, row['user_id'], row['item']))
+                                (int(matches_threshold), guild_id, row['user_id'], row['item']))
+            # Уже подходящие товары дополняют ЛС получателя только при новом сигнале.
+            alerts = [alert for alert in alerts if alert['user_id'] in new_recipients]
             return self.track_price_alerts(guild_id, source_id, alerts)
 
     def release_channel(self, guild_id):

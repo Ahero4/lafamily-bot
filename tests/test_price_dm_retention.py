@@ -82,6 +82,33 @@ class PriceDmRetentionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.price_delivery_summary('1', 1)['sent'], 1)
         self.assertEqual(self.store.price_delivery_summary('1', 2)['sent'], 1)
 
+    async def test_new_alert_includes_other_subscriptions_still_matching(self):
+        modes = {'Керосин': 'near', 'Хорошее мясо': 'near', 'Бензин': 'near', 'Солярка': 'max'}
+        self.store.replace_price_subscriptions('1', '123', list(modes), modes)
+        self.store.replace_price_subscriptions('1', '456', ['Керосин'], {'Керосин': 'near'})
+        other = SimpleNamespace(send=AsyncMock())
+        self.guild.fetch_member.side_effect = {123: self.member, 456: other}.__getitem__
+        first = (EXAMPLE.replace('- Керосин: $123 ($147)', '- Керосин: $196 ($235)')
+                 .replace('- Хорошее мясо: $987 ($1184)', '- Хорошее мясо: $900 ($1080)'))
+        second = first.replace('- Хорошее мясо: $900 ($1080)', '- Хорошее мясо: $990 ($1188)')
+
+        await self.post(100, first)
+        self.assertIn('Керосин: $196', self.messages[0].content)
+        self.assertNotIn('Хорошее мясо', self.messages[0].content)
+
+        await self.post(101, second)
+        self.assertEqual(self.member.send.await_count, 2)
+        content = self.messages[1].content
+        self.assertIn('Хорошее мясо: $990', content)
+        self.assertIn('Керосин: $196', content)
+        self.assertNotIn('Бензин', content)
+        self.assertNotIn('Солярка', content)
+        other.send.assert_awaited_once()
+
+        await self.post(102, second)
+        self.assertEqual(self.member.send.await_count, 2)
+        other.send.assert_awaited_once()
+
     async def test_upgrade_ignores_preexisting_pending_deletion(self):
         await self.post()
         message = self.messages[0]

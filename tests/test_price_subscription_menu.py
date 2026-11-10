@@ -35,7 +35,7 @@ class SubscriptionMenuTests(unittest.IsolatedAsyncioTestCase):
         await self.view.save(self.interaction)
         self.assertEqual(set(self.store.price_subscriptions('1', '123')), {'Медь', 'Рубин', 'Карп'})
         self.assertEqual(self.store.claim_price_alerts('1', '101', ['Медь']), [])
-        self.assertIn('Discord (DM)', self.interaction.edit_original_response.call_args.kwargs['content'])
+        self.assertIn('Discord (ЛС)', self.interaction.edit_original_response.call_args.kwargs['content'])
         self.assertNotIn('<#', self.interaction.edit_original_response.call_args.kwargs['content'])
         self.assertTrue(self.view.finished)
         self.assertIsNone(self.interaction.edit_original_response.call_args.kwargs['view'])
@@ -107,4 +107,4 @@ class SubscriptionMenuTests(unittest.IsolatedAsyncioTestCase):
         from lafamily.modules.prices.parser import LIMITS
         await self.view.choose(self.interaction, list(LIMITS))
         self.assertLessEqual(len(self.view.prompt()), 2000)
-        self.assertIn('Discord (DM)', self.view.prompt())
+        self.assertIn('Discord (ЛС)', self.view.prompt())

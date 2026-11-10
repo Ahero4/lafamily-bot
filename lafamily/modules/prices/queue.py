@@ -26,7 +26,10 @@ async def enqueue_notifications(store,message,report):
         prices[item]=(best,places)
         if best>=limit['base']:maxima[item]=True
         if limit['base']*95<=best*100<=limit['base']*100:near[item]=True
-    alerts=await database_call(store,'claim_price_alerts',str(message.guild.id),str(message.id),list(maxima),list(near))
+    alerts = await database_call(
+        store, 'claim_price_alerts', str(message.guild.id), str(message.id), list(maxima), list(near),
+        include_existing_matches=True,
+    )
     users={}
     for alert in alerts:users.setdefault(alert['user_id'],[]).append(alert)
     for user,items in users.items():
