@@ -54,6 +54,14 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
             CREATE TABLE IF NOT EXISTS announcement_attempts(
                 schedule_id INTEGER NOT NULL REFERENCES announcement_schedules(id), starts_at TEXT NOT NULL,
                 state TEXT NOT NULL, message_id TEXT, PRIMARY KEY(schedule_id,starts_at));
+            CREATE TABLE IF NOT EXISTS recurring_notices(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
+                channel_id TEXT NOT NULL, role_id TEXT NOT NULL, clock TEXT NOT NULL, days TEXT NOT NULL,
+                body TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 1,
+                last_day TEXT, name TEXT);
+            CREATE TABLE IF NOT EXISTS reaction_role_settings(
+                guild_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, message_id TEXT NOT NULL,
+                role_id TEXT NOT NULL, grant_emoji TEXT NOT NULL, revoke_emoji TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS settings (
                 guild_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
                 organizer_role_id TEXT NOT NULL, manager_role_id TEXT NOT NULL
@@ -120,6 +128,8 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
         self.init_insights()
         self.init_planning()
         self.init_jobs()
+        if 'name' not in {row['name'] for row in self.db.execute('PRAGMA table_info(recurring_notices)')}:
+            self.db.execute('ALTER TABLE recurring_notices ADD COLUMN name TEXT')
         # Старые подписки сохраняют прежний режим и защиту от повторных тегов.
         if 'threshold' not in {r['name'] for r in self.db.execute('PRAGMA table_info(price_subscriptions)')}:
             self.db.execute("ALTER TABLE price_subscriptions ADD COLUMN threshold TEXT NOT NULL DEFAULT 'max'")
@@ -589,6 +599,56 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
     def finish_announcement(self, schedule_id, starts_at, state, message_id):
         self.db.execute('UPDATE announcement_attempts SET state=?,message_id=? WHERE schedule_id=? AND starts_at=?',
                         (state,message_id,schedule_id,starts_at))
+
+    def recurring_notice(self, guild_id, number):
+        row = self.db.execute('SELECT * FROM recurring_notices WHERE guild_id=? AND id=?',
+                              (guild_id, number)).fetchone()
+        if row is None:
+            raise UserError('Оповещение на этом сервере не найдено.')
+        return dict(row)
+
+    def recurring_notices(self, guild_id, enabled_only=False):
+        return [dict(row) for row in self.db.execute('''SELECT * FROM recurring_notices
+            WHERE guild_id=? AND (?=0 OR enabled=1) ORDER BY id''', (guild_id, int(enabled_only)))]
+
+    def save_recurring_notice(self, guild_id, request_id, draft):
+        with self.transaction():
+            self.ensure_channel_separation(guild_id, draft['channel_id'])
+            values = (draft['role_id'], draft['clock'], draft['days'], draft['body'], int(draft['enabled']))
+            if draft.get('id') is None:
+                self.db.execute('''INSERT INTO recurring_notices
+                    (guild_id,request_id,channel_id,role_id,clock,days,body,enabled,name) VALUES (?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(request_id) DO NOTHING''',
+                    (guild_id, request_id, draft['channel_id'], *values, draft.get('name')))
+                return self.db.execute('SELECT id FROM recurring_notices WHERE guild_id=? AND request_id=?',
+                                       (guild_id, request_id)).fetchone()['id']
+            result = self.db.execute('''UPDATE recurring_notices SET role_id=?,clock=?,days=?,body=?,enabled=?,
+                revision=revision+1 WHERE guild_id=? AND id=? AND revision=?''',
+                (*values, guild_id, draft['id'], draft['revision']))
+            if not result.rowcount:
+                raise UserError('Оповещение уже изменилось. Откройте его заново.')
+            return draft['id']
+
+    def claim_recurring_notice(self, guild_id, number, revision, day):
+        # Захват дня до сетевой отправки защищает от дублей после перезапуска.
+        result = self.db.execute('''UPDATE recurring_notices SET last_day=? WHERE guild_id=? AND id=?
+            AND revision=? AND enabled=1 AND (last_day IS NULL OR last_day<?)''',
+            (day, guild_id, number, revision, day))
+        return bool(result.rowcount)
+
+    def reaction_role_settings(self, guild_id):
+        row = self.db.execute('SELECT * FROM reaction_role_settings WHERE guild_id=?', (guild_id,)).fetchone()
+        return dict(row) if row else None
+
+    def configure_reaction_role(self, guild_id, actor_id, channel_id, message_id, role_id, grant_emoji, revoke_emoji):
+        with self.transaction():
+            self.ensure_channel_separation(guild_id, channel_id)
+            self.db.execute('''INSERT INTO reaction_role_settings VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id)
+                DO UPDATE SET channel_id=excluded.channel_id,message_id=excluded.message_id,role_id=excluded.role_id,
+                    grant_emoji=excluded.grant_emoji,revoke_emoji=excluded.revoke_emoji''',
+                (guild_id, channel_id, message_id, role_id, grant_emoji, revoke_emoji))
+            self.audit(guild_id, actor_id, 'reaction_role.configured',
+                       {'channel_id': channel_id, 'message_id': message_id, 'role_id': role_id})
 
     def close(self):
         self.db.close()

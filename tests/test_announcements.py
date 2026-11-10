@@ -107,6 +107,51 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
         await self.service.tick(START - timedelta(minutes=9))
         self.channel.send.assert_awaited_once()
 
+    def planned(self, request_id, *, reminder=True, publish=True):
+        event = self.store.create_planned_event(G, '1', request_id, '456', 'Тренировка', timestamp(START), 10,
+                                                now=START - timedelta(hours=1), reminder=reminder)
+        if publish:
+            self.store.bind_planned_message(G, event['id'], '987')
+        return event['id']
+
+    async def test_planned_reminder_is_sent_once_with_link_and_no_mentions(self):
+        self.store.disable_announcement_schedule(G, self.schedule)
+        event_id = self.planned('manual')
+        await self.service.tick(START - timedelta(minutes=16))
+        self.channel.send.assert_not_awaited()
+
+        second_service = AnnouncementService(self.client, self.store, int(G))
+        now = START - timedelta(minutes=15)
+        await asyncio.gather(self.service.tick(now), second_service.tick(now))
+        await second_service.tick(START - timedelta(minutes=2))
+        self.channel.send.assert_awaited_once()
+        payload = self.channel.send.call_args.kwargs
+        self.assertEqual(payload['embed'].title, 'Скоро МП: Тренировка')
+        self.assertIn(f'https://discord.com/channels/{G}/456/987', payload['embed'].description)
+        self.assertEqual(payload['allowed_mentions'].to_dict(), {'parse': []})
+        self.assertEqual(self.store.planned_event(G, event_id)['reminder_state'], 'sent')
+
+    async def test_planned_reminder_skips_disabled_closed_unpublished_and_started_events(self):
+        self.store.disable_announcement_schedule(G, self.schedule)
+        self.planned('disabled', reminder=False)
+        self.planned('unpublished', publish=False)
+        closed = self.planned('closed')
+        self.store.close_planned(G, '1', closed)
+        await self.service.tick(START - timedelta(minutes=10))
+        self.planned('started')
+        await self.service.tick(START)
+        self.channel.send.assert_not_awaited()
+
+    async def test_planned_reminder_does_not_repeat_an_uncertain_send(self):
+        self.store.disable_announcement_schedule(G, self.schedule)
+        event_id = self.planned('manual')
+        self.channel.send.side_effect = OSError('unknown result')
+        with self.assertLogs('lafamily.errors', level='ERROR'):
+            await self.service.tick(START - timedelta(minutes=5))
+        await AnnouncementService(self.client, self.store, int(G)).tick(START - timedelta(minutes=4))
+        self.channel.send.assert_awaited_once()
+        self.assertEqual(self.store.planned_event(G, event_id)['reminder_state'], 'uncertain')
+
     async def test_failures_and_permissions_do_not_duplicate_tags(self):
         self.channel.permissions_for.return_value.send_messages=False
         with self.assertLogs('lafamily.errors',level='ERROR'):
@@ -165,6 +210,117 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.store.announcement_schedules(G)),2)
         with self.assertRaises(UserError):await commands.weekly.callback(commands,request,str(self.template),'xxx','20:00')
         self.assertEqual(len(self.store.announcement_schedules(G)),2)
+
+    def notice_interaction(self, request_id=1000):
+        return SimpleNamespace(id=request_id, guild_id=int(G), guild=self.guild, channel=self.channel,
+            channel_id=self.channel.id, user=SimpleNamespace(id=42), permissions=discord.Permissions(administrator=True),
+            response=SimpleNamespace(defer=AsyncMock(), send_modal=AsyncMock(), edit_message=AsyncMock()),
+            edit_original_response=AsyncMock())
+
+    async def test_notice_card_saves_only_after_description_and_confirmation_then_edits_same_id(self):
+        commands = AnnouncementCommands(self.service)
+        interaction = self.notice_interaction()
+        await commands.notice.callback(commands, interaction, 'Капт', '20:00', self.role)
+        card = interaction.edit_original_response.call_args.kwargs['view']
+        self.addCleanup(card.stop)
+        self.assertEqual(self.store.recurring_notices(G), [])
+        with self.assertRaises(UserError):
+            await card.confirm.callback(interaction)
+        await card.description.callback(interaction)
+        modal = interaction.response.send_modal.call_args.args[0]
+        modal.body._value = 'Сбор в голосовом канале'
+        await modal.on_submit(interaction)
+        self.assertEqual(self.store.recurring_notices(G), [])
+        await card.confirm.callback(interaction)
+        saved, = self.store.recurring_notices(G)
+        self.assertEqual(json.loads(saved['days']), list(range(7)))
+        self.assertEqual(saved['body'], 'Сбор в голосовом канале')
+        self.assertEqual(saved['name'], 'Капт')
+
+        new_role = MagicMock(spec=discord.Role)
+        new_role.id, new_role.guild, new_role.mentionable = 321, self.guild, True
+        new_role.is_default.return_value = False
+        self.guild.get_role = {self.role.id: self.role, new_role.id: new_role}.get
+        edit = self.notice_interaction(1001)
+        choices = await commands.notice_choices(edit, 'кап')
+        self.assertEqual([choice.value for choice in choices], [str(saved['id'])])
+        self.assertIn('Капт', choices[0].name)
+        await commands.edit_notice.callback(commands, edit, choices[0].value, '21:00', role=new_role)
+        editor = edit.edit_original_response.call_args.kwargs['view']
+        self.addCleanup(editor.stop)
+        self.assertEqual(len(editor.select_days.options), 7)
+        editor.select_days._values = ['2', '0']
+        await editor.select_days.callback(edit)
+        self.assertEqual(json.loads(self.store.recurring_notice(G, saved['id'])['days']), list(range(7)))
+        await editor.description.callback(edit)
+        modal = edit.response.send_modal.call_args.args[0]
+        modal.body._value = 'Сбор на тренировку'
+        await modal.on_submit(edit)
+        await editor.confirm.callback(edit)
+        changed, = self.store.recurring_notices(G)
+        self.assertEqual((changed['id'], changed['clock'], changed['body']),
+                         (saved['id'], '21:00', 'Сбор на тренировку'))
+        self.assertEqual(json.loads(changed['days']), [0, 2])
+        self.assertEqual(changed['role_id'], '321')
+
+        disable = self.notice_interaction(1002)
+        await commands.edit_notice.callback(commands, disable, str(saved['id']), enabled=False)
+        card = disable.edit_original_response.call_args.kwargs['view']
+        self.addCleanup(card.stop)
+        self.assertEqual([option.value for option in card.select_days.options if option.default], ['0', '2'])
+        card.select_days._values = []
+        await card.select_days.callback(disable)
+        await card.confirm.callback(disable)
+        self.assertEqual(self.store.recurring_notices(G, enabled_only=True), [])
+        self.assertEqual(json.loads(self.store.recurring_notice(G, saved['id'])['days']), list(range(7)))
+
+    async def test_recurring_notice_sends_at_chosen_time_on_selected_days_once_per_day(self):
+        self.store.disable_announcement_schedule(G, self.schedule)
+        self.role.mention = '<@&123>'
+        self.store.save_recurring_notice(G, 'notice', {'channel_id': '456', 'role_id': '123',
+            'clock': '20:00', 'days': '[0, 2]', 'body': 'Тренировка @everyone <@555>', 'enabled': True})
+        await self.service.tick(START - timedelta(minutes=1))
+        await self.service.tick(START + timedelta(days=1))
+        await self.service.tick(START + timedelta(minutes=5))
+        self.channel.send.assert_not_awaited()
+
+        await self.service.tick(START)
+        await AnnouncementService(self.client, self.store, int(G)).tick(START + timedelta(minutes=1))
+        self.channel.send.assert_awaited_once()
+        payload = self.channel.send.call_args.kwargs
+        self.assertEqual(payload['content'], '<@&123>')
+        self.assertEqual(payload['allowed_mentions'].to_dict(), {'roles': [123], 'parse': []})
+        self.assertIn('Тренировка', payload['embed'].description)
+        await self.service.tick(START + timedelta(days=2))
+        self.assertEqual(self.channel.send.await_count, 2)
+
+    async def test_notice_edit_is_rejected_after_another_card_was_saved(self):
+        draft = {'channel_id': '456', 'role_id': '123', 'clock': '20:00', 'days': '[0]',
+                 'body': 'Сбор', 'enabled': True}
+        number = self.store.save_recurring_notice(G, 'notice', draft)
+        older = self.store.recurring_notice(G, number)
+        self.store.save_recurring_notice(G, 'first-edit', {**older, 'body': 'Первое изменение'})
+        with self.assertRaises(UserError):
+            self.store.save_recurring_notice(G, 'stale-edit', {**older, 'body': 'Устаревшая карточка'})
+        self.assertEqual(self.store.recurring_notice(G, number)['body'], 'Первое изменение')
+
+    def test_old_recurring_notice_keeps_schedule_when_name_column_is_added(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'notices.sqlite'
+            store = Store(path)
+            try:
+                number = store.save_recurring_notice(G, 'legacy', {'channel_id': '456', 'role_id': '123',
+                    'clock': '20:00', 'days': '[0, 2]', 'body': 'Сбор', 'enabled': True})
+                store.db.execute('ALTER TABLE recurring_notices DROP COLUMN name')
+            finally:
+                store.close()
+            store = Store(path)
+            try:
+                notice = store.recurring_notice(G, number)
+                self.assertIsNone(notice['name'])
+                self.assertEqual((notice['clock'], notice['days'], notice['body']), ('20:00', '[0, 2]', 'Сбор'))
+            finally:
+                store.close()
 
     def test_persistence_template_edit_and_guild_isolation(self):
         with tempfile.TemporaryDirectory() as directory:

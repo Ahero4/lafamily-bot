@@ -10,17 +10,21 @@ from discord import app_commands
 from discord.ext import tasks
 
 from lafamily.async_database import database_call
+from lafamily.confirmations import ConfirmAction
 from lafamily.diagnostics import log_error
 from lafamily.errors import UserError
 from lafamily.modules.events.time import MOSCOW, timestamp, display_date
 from lafamily.permissions import require_access_async
+from lafamily.responses import send_error
 from lafamily.modules.planning import SignupView
 
 DAYS = ('пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс')
+DAY_NAMES = ('Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье')
+NOTICE_WINDOW = timedelta(minutes=5)
 
 
 def parse_clock(value):
-    if not re.fullmatch(r'(?:[01]\d|2[0-3]):[0-5]\d', value):
+    if not re.fullmatch(r'(?:[01][0-9]|2[0-3]):[0-5][0-9]', value):
         raise UserError('Время: ЧЧ:ММ по Москве, например 20:00.')
     return value
 
@@ -33,6 +37,22 @@ def parse_days(value):
     if not selected or not selected.issubset(DAYS):
         raise UserError('Дни: пн,вт,ср,чт,пт,сб,вс или ежедневно.')
     return [i for i, day in enumerate(DAYS) if day in selected]
+
+
+def notice_days(days):
+    selected = json.loads(days)
+    return 'ежедневно' if selected == list(range(7)) else ', '.join(DAYS[i] for i in selected)
+
+
+def due_notice_day(notice, now):
+    local = now.astimezone(MOSCOW)
+    if local.weekday() not in json.loads(notice['days']):
+        return None
+    hour, minute = map(int, notice['clock'].split(':'))
+    scheduled = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if scheduled <= local < scheduled + NOTICE_WINDOW:
+        return local.date().isoformat()
+    return None
 
 
 def parse_start(value, now=None):
@@ -182,11 +202,152 @@ class AnnouncementService:
                             raise
                     except Exception as error:
                         log_error(f'Не удалось отправить анонс расписания #{row["id"]}; неопределённая отправка не повторяется', error)
+            await self.remind_planned_events(supplied_now)
+            await self.send_recurring_notices(supplied_now)
+
+    async def send_recurring_notices(self, now=None):
+        guild_id = str(self.guild_id)
+        for notice in await database_call(self.store, 'recurring_notices', guild_id, True):
+            day = due_notice_day(notice, now or datetime.now(UTC))
+            if day is None or (notice['last_day'] and notice['last_day'] >= day):
+                continue
+            try:
+                channel, role = await self.notice_destination(notice)
+                if due_notice_day(notice, now or datetime.now(UTC)) != day:
+                    continue
+                claimed = await database_call(self.store, 'claim_recurring_notice', guild_id,
+                                              notice['id'], notice['revision'], day)
+                if claimed:
+                    embed = discord.Embed(title=notice['name'] or 'Оповещение о МП', description=notice['body'],
+                                          colour=0xE5B84B)
+                    await channel.send(content=role.mention, embed=embed,
+                                       allowed_mentions=discord.AllowedMentions(everyone=False, users=False,
+                                                                                roles=[role], replied_user=False))
+            except Exception as error:
+                log_error(f'Не удалось отправить регулярное оповещение #{notice["id"]}', error)
+
+    async def notice_destination(self, notice):
+        channel = await self.client.fetch_channel(int(notice['channel_id']))
+        text_channel(channel, self.guild_id)
+        await database_call(self.store, 'ensure_channel_separation', str(self.guild_id), notice['channel_id'])
+        role = channel.guild.get_role(int(notice['role_id']))
+        check_role(channel, role)
+        return channel, role
+
+    async def remind_planned_events(self, now=None):
+        guild_id = str(self.guild_id)
+        events = await database_call(self.store, 'due_planned_reminders', guild_id, now or datetime.now(UTC))
+        for event in events:
+            number = event['id']
+            try:
+                channel = await self.client.fetch_channel(int(event['channel_id']))
+                text_channel(channel, self.guild_id)
+                await database_call(self.store, 'ensure_channel_separation', guild_id, event['channel_id'])
+                start = int(datetime.fromisoformat(event['starts_at']).timestamp())
+                link = f'https://discord.com/channels/{guild_id}/{event["channel_id"]}/{event["message_id"]}'
+                embed = discord.Embed(title=f'Скоро МП: {event["name"]}', url=link, colour=0xE5B84B,
+                                      description=f'Начало <t:{start}:F> · <t:{start}:R>\n[Открыть запись]({link})')
+                claimed = await database_call(self.store, 'claim_planned_reminder', guild_id, number,
+                                              now or datetime.now(UTC))
+                if claimed:
+                    await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                    await database_call(self.store, 'finish_planned_reminder', guild_id, number)
+            except Exception as error:
+                log_error(f'Не удалось отправить напоминание о МП #{number}', error)
+
+
+class NoticeDescription(discord.ui.Modal, title='Описание оповещения'):
+    def __init__(self, card):
+        super().__init__(timeout=180)
+        self.card = card
+        self.body = discord.ui.TextInput(label='Описание', style=discord.TextStyle.paragraph,
+                                         max_length=2000, default=card.draft['body'] or None)
+        self.add_item(self.body)
+
+    async def on_submit(self, interaction):
+        await interaction.response.defer()
+        async with self.card.lock:
+            await self.card.check_editor(interaction)
+            body = self.body.value.strip()
+            if not body:
+                raise UserError('Введите описание оповещения.')
+            await interaction.edit_original_response(embed=self.card.preview(body), view=self.card,
+                                                     allowed_mentions=discord.AllowedMentions.none())
+            self.card.draft['body'] = body
+
+    async def on_error(self, interaction, error):
+        await send_error(interaction, error)
+
+
+class NoticeCard(ConfirmAction):
+    def __init__(self, service, interaction, draft):
+        super().__init__(service.store, interaction, 'admin', self.save)
+        self.service, self.draft = service, draft
+        self.request_id = str(interaction.id)
+        self.set_day_options(json.loads(draft['days']))
+
+    def set_day_options(self, days):
+        self.select_days.options = [discord.SelectOption(label=name, value=str(index),
+            default=index in days and len(days) < len(DAY_NAMES)) for index, name in enumerate(DAY_NAMES)]
+
+    def preview(self, body=None):
+        draft = self.draft
+        title = f'Оповещение о МП №{draft["id"]}' if draft.get('id') else 'Новое оповещение о МП'
+        if draft.get('name'):
+            title = f'{title} · {draft["name"]}'
+        embed = discord.Embed(title=title, description=(draft['body'] if body is None else body)
+                              or 'Добавьте описание кнопкой ниже, затем подтвердите.')
+        embed.add_field(name='Отправка', value=f'{draft["clock"]} МСК · {notice_days(draft["days"])}')
+        embed.add_field(name='Канал', value=f'<#{draft["channel_id"]}>')
+        embed.add_field(name='Роль', value=f'<@&{draft["role_id"]}>')
+        embed.add_field(name='Состояние после сохранения', value='Включено' if draft['enabled'] else 'Отключено')
+        return embed
+
+    async def check_editor(self, interaction):
+        if interaction.user.id != self.owner or interaction.guild_id != self.guild:
+            raise UserError('Эта карточка принадлежит другому пользователю.')
+        if self.finished or self.is_finished():
+            raise UserError('Карточка уже закрыта. Откройте команду заново.')
+        await require_access_async(interaction, self.store, 'admin')
+
+    @discord.ui.button(label='Описание', style=discord.ButtonStyle.primary, row=1)
+    async def description(self, interaction, button):
+        await self.check_editor(interaction)
+        await interaction.response.send_modal(NoticeDescription(self))
+
+    @discord.ui.select(placeholder='Дни отправки · пустой выбор означает ежедневно', min_values=0, max_values=7, row=2)
+    async def select_days(self, interaction, select):
+        await interaction.response.defer()
+        async with self.lock:
+            await self.check_editor(interaction)
+            days = [index for index in range(len(DAY_NAMES)) if str(index) in select.values]
+            previous_days = self.draft['days']
+            previous_options = select.options
+            self.draft['days'] = json.dumps(days or list(range(len(DAY_NAMES))))
+            self.set_day_options(days)
+            try:
+                await interaction.edit_original_response(embed=self.preview(), view=self,
+                                                         allowed_mentions=discord.AllowedMentions.none())
+            except BaseException:
+                self.draft['days'] = previous_days
+                select.options = previous_options
+                raise
+
+    async def save(self, interaction):
+        if not self.draft['body']:
+            raise UserError('Добавьте описание оповещения перед подтверждением.')
+        async with self.service.lock:
+            if self.draft['enabled']:
+                await self.service.notice_destination(self.draft)
+            number = await database_call(self.store, 'save_recurring_notice', str(self.guild), self.request_id,
+                                         self.draft)
+        state = 'сохранено' if self.draft['enabled'] else 'отключено'
+        return f'Оповещение №{number} {state}. Чтобы открыть его снова, выберите название в `/анонс редактировать`.'
 
 
 class AnnouncementCommands(app_commands.Group):
     def __init__(self, service):
-        super().__init__(name='анонс', description='Уведомления о МП за 15 минут', guild_only=True)
+        super().__init__(name='анонс', description='Расписания анонсов и регулярных оповещений о МП', guild_only=True)
         self.service = service
 
     async def begin(self, interaction):
@@ -265,16 +426,78 @@ class AnnouncementCommands(app_commands.Group):
     async def weekly_choices(self, interaction, current):
         return await self.choices(interaction, current)
 
+    @app_commands.command(name='оповещение', description='Создать регулярное оповещение о МП', extras={'access': 'admin'})
+    @app_commands.rename(name='название', clock='время', role='роль')
+    @app_commands.describe(clock='Время отправки ЧЧ:ММ по Москве. Дни выбираются в карточке.')
+    async def notice(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 80],
+                     clock: str, role: discord.Role):
+        await self.begin(interaction)
+        text_channel(interaction.channel, self.service.guild_id)
+        check_role(interaction.channel, role)
+        name = name.strip()
+        if not name:
+            raise UserError('Введите название оповещения.')
+        draft = {'channel_id': str(interaction.channel_id), 'role_id': str(role.id), 'clock': parse_clock(clock),
+                 'name': name, 'days': json.dumps(list(range(len(DAY_NAMES)))), 'body': '', 'enabled': True}
+        card = NoticeCard(self.service, interaction, draft)
+        await interaction.edit_original_response(embed=card.preview(), view=card,
+                                                 allowed_mentions=discord.AllowedMentions.none())
+
+    @app_commands.command(name='редактировать', description='Открыть карточку регулярного оповещения', extras={'access': 'admin'})
+    @app_commands.rename(notice='название', clock='время', role='роль', enabled='включено')
+    @app_commands.describe(notice='Выберите оповещение по названию из списка', enabled='Нет отключает оповещение')
+    async def edit_notice(self, interaction: discord.Interaction, notice: str, clock: str | None = None,
+                          role: discord.Role | None = None, enabled: bool | None = None):
+        await self.begin(interaction)
+        if not re.fullmatch(r'[1-9][0-9]{0,17}', notice):
+            raise UserError('Выберите оповещение из списка названий.')
+        draft = await database_call(self.service.store, 'recurring_notice', str(interaction.guild_id), int(notice))
+        if clock is not None:
+            draft['clock'] = parse_clock(clock)
+        if role is not None:
+            if role.is_default() or role.guild.id != interaction.guild_id:
+                raise UserError('Выберите конкретную роль этого сервера, кроме @everyone.')
+            draft['role_id'] = str(role.id)
+        if enabled is not None:
+            draft['enabled'] = enabled
+        card = NoticeCard(self.service, interaction, draft)
+        await interaction.edit_original_response(embed=card.preview(), view=card,
+                                                 allowed_mentions=discord.AllowedMentions.none())
+
+    @edit_notice.autocomplete('notice')
+    async def notice_choices(self, interaction, current):
+        try:
+            await asyncio.wait_for(require_access_async(interaction, self.service.store, 'admin'), timeout=1)
+            rows = await asyncio.wait_for(database_call(self.service.store, 'recurring_notices',
+                                                       str(interaction.guild_id)), timeout=1)
+        except (UserError, TimeoutError):
+            return []
+        choices = []
+        query = current.strip().casefold()
+        for row in rows:
+            label = f'№{row["id"]} · {row["name"] or "Оповещение о МП"}'[:100]
+            if query in label.casefold():
+                choices.append(app_commands.Choice(name=label, value=str(row['id'])))
+            if len(choices) == 25:
+                break
+        return choices
+
     @app_commands.command(name='список', description='Показать шаблоны и расписания анонсов', extras={'access': 'admin'})
     async def listing(self, interaction: discord.Interaction):
         from io import BytesIO
         await self.begin(interaction)
         templates = await database_call(self.service.store, 'announcement_templates', str(interaction.guild_id))
         schedules = await database_call(self.service.store, 'announcement_schedules', str(interaction.guild_id), False)
+        notices = await database_call(self.service.store, 'recurring_notices', str(interaction.guild_id))
         text = 'Шаблоны:\n' + '\n'.join(f'#{r["id"]} {r["name"]} → канал {r["channel_id"]}, роль {r["role_id"]}' for r in templates)
         text += '\n\nРасписания (Москва):\n' + '\n'.join(f'#{r["id"]} {r["name"]}: ' +
             (display_date(r['starts_at']) if r['kind']=='once' else f'{",".join(DAYS[i] for i in json.loads(r["days"]))} {r["clock"]}') +
             (' — включено' if r['enabled'] else ' — отключено') for r in schedules)
+        if notices:
+            text += '\n\nРегулярные оповещения:\n' + '\n'.join(
+                f'№{row["id"]} · {row["name"] or "Оповещение о МП"} · {row["clock"]} МСК · {notice_days(row["days"])} · '
+                f'<#{row["channel_id"]}> · <@&{row["role_id"]}> · '
+                + ('включено' if row['enabled'] else 'отключено') for row in notices)
         if len(text) > 1900:
             await interaction.edit_original_response(content='Полный список — в файле.', attachments=[discord.File(BytesIO(text.encode('utf-8')), filename='anonsy.txt')])
         else:

@@ -73,20 +73,23 @@ def register_planning(tree,client,store,guild_id):
     root.add_command(group)
 
     @group.command(name='создать',description='Открыть запись на будущее МП',extras={'access':'organizer'})
-    @app_commands.rename(name='название',start='начало',capacity='мест')
-    async def create(interaction:discord.Interaction,name:app_commands.Range[str,1,80],start:str,capacity:app_commands.Range[int,1,100]=100):
+    @app_commands.rename(name='название',start='начало',capacity='мест',reminder='напоминание')
+    @app_commands.describe(reminder='Напомнить в этом канале за 15 минут до начала. По умолчанию включено.')
+    async def create(interaction:discord.Interaction,name:app_commands.Range[str,1,80],start:str,
+                     capacity:app_commands.Range[int,1,100]=100,reminder:bool=True):
         await interaction.response.defer(ephemeral=True)
         await require_access_async(interaction,store,'organizer')
         try: begins=timestamp(datetime.strptime(start,'%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW))
         except ValueError:raise UserError('Начало: ГГГГ-ММ-ДД ЧЧ:ММ по Москве.')
         await client.events.channel(interaction.guild,str(interaction.channel_id))
-        event=await database_call(store,'create_planned_event',str(interaction.guild_id),str(interaction.user.id),str(interaction.id),str(interaction.channel_id),name,begins,capacity)
+        event=await database_call(store,'create_planned_event',str(interaction.guild_id),str(interaction.user.id),str(interaction.id),str(interaction.channel_id),name,begins,capacity,reminder=reminder)
         if event['message_id']:
             await interaction.edit_original_response(content=f'Запись #{event["id"]} уже опубликована.')
             return
         message=await interaction.channel.send(embed=signup_embed(event),view=SignupView(store),allowed_mentions=discord.AllowedMentions.none())
         await database_call(store,'bind_planned_message',str(interaction.guild_id),event['id'],str(message.id))
-        await interaction.edit_original_response(content=f'Запись #{event["id"]} опубликована: {message.jump_url}')
+        notice = '\nБот напомнит в этом канале за 15 минут до начала.' if event['reminder_state'] == 'pending' else ''
+        await interaction.edit_original_response(content=f'Запись #{event["id"]} опубликована: {message.jump_url}{notice}')
 
     @group.command(name='состав',description='Основной состав, резерв и возможные участники',extras={'access':'all'})
     @app_commands.rename(number='номер')

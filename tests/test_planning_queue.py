@@ -53,9 +53,14 @@ class PlanningTests(unittest.TestCase):
             event=with_store.create_planned_event(G,U,'1',C,'Капт',self.future,1)
             with_store.signup_planned(G,event['id'],U,'going')
             with_store.bind_planned_message(G,event['id'],'900')
+            # Открываем схему, созданную до появления напоминаний.
+            with_store.db.execute('ALTER TABLE planned_events DROP COLUMN reminder_state')
             with_store.close()
             with_store=Store(path)
-            try:self.assertEqual(with_store.planned_by_message(G,'900')['going'],[U])
+            try:
+                event = with_store.planned_by_message(G, '900')
+                self.assertEqual(event['going'], [U])
+                self.assertIsNone(event['reminder_state'])
             finally:with_store.close()
 
     def test_prices_channel_separation_in_both_directions(self):

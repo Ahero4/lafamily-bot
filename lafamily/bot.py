@@ -13,6 +13,7 @@ from lafamily.modules.planning import register_planning,SignupView
 from lafamily.modules.health import HealthService,register_health
 from lafamily.modules.announcements import AnnouncementService, AnnouncementCommands
 from lafamily.modules.release_updates import ReleaseUpdates, register_release_updates
+from lafamily.modules.reaction_roles import ReactionRoles, register_reaction_roles
 from lafamily.errors import UserError
 from lafamily.database import Store
 from lafamily.modules.events.commands import install_commands
@@ -49,6 +50,7 @@ class FamilyBot(discord.Client):
         intents.guilds = True
         intents.voice_states = True  # Состав голосового канала для отчётов МП.
         intents.guild_messages = True
+        intents.guild_reactions = True
         intents.message_content = config.message_content_intent
         intents.members = config.members_intent
         super().__init__(intents=intents, application_id=config.client_id,
@@ -74,6 +76,8 @@ class FamilyBot(discord.Client):
         register_database_backups(self.tree, self.backups, config.guild_id)
         register_insights(self.tree,self,store,config.guild_id)
         register_planning(self.tree,self,store,config.guild_id)
+        self.reaction_roles = ReactionRoles(self, store, config.guild_id)
+        register_reaction_roles(self.tree, self.reaction_roles)
         self.health=HealthService(self,store,config.guild_id)
         register_health(self.tree,self.health,config.guild_id)
 
@@ -99,6 +103,10 @@ class FamilyBot(discord.Client):
     async def on_raw_message_edit(self, payload):
         if not self.backups.restoring:
             await self.prices.handle_edit(payload)
+
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if not self.backups.restoring:
+            await self.reaction_roles.handle(payload)
 
     async def on_ready(self):
         logger.info("LaFamily запущен: %s", self.user)

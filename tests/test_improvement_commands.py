@@ -40,6 +40,20 @@ class ImprovementCommandTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(path=path),self.assertRaises(UserError):
                 await self.command(path).callback(self.interaction(),*args)
 
+    async def test_create_planned_event_enables_reminder_unless_disabled(self):
+        self.bot.events.channel = AsyncMock()
+        command = self.command('мп запись создать')
+        for request_id, options, expected in ((123, {}, 'pending'), (124, {'reminder': False}, None)):
+            interaction = self.interaction()
+            interaction.id = request_id
+            interaction.channel_id = int(C)
+            interaction.permissions = discord.Permissions(administrator=True)
+            interaction.channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(
+                id=request_id + 1000, jump_url='https://discord.com/channels/1/2/3')))
+            await command.callback(interaction, 'Капт', '2099-01-01 12:00', **options)
+            event = self.store.planned_by_message(G, str(request_id + 1000))
+            self.assertEqual(event['reminder_state'], expected)
+
     async def test_profile_hides_other_participants_subscriptions(self):
         self.store.set_price_subscription(G,V,'Медь',True)
         interaction=self.interaction()
