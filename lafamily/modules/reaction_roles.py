@@ -37,9 +37,8 @@ class ReactionRoles:
             raise UserError('Выберите канал настроенного сервера.')
         self.check_role(guild, role)
         permissions = channel.permissions_for(guild.me)
-        if not (permissions.view_channel and permissions.read_message_history and permissions.add_reactions
-                and permissions.manage_messages):
-            raise UserError('В канале боту нужны просмотр, чтение истории, добавление реакций и управление сообщениями.')
+        if not (permissions.view_channel and permissions.read_message_history and permissions.add_reactions):
+            raise UserError('В канале боту нужны просмотр, чтение истории и добавление реакций.')
         if message_id is None and not permissions.send_messages:
             raise UserError('Боту нужно право отправлять сообщения в выбранном канале.')
         if message_id is not None and (not message_id.isascii() or not message_id.isdigit()
@@ -111,10 +110,6 @@ class ReactionRoles:
                     return
                 change_role = member.add_roles if granting else member.remove_roles
                 await change_role(role, reason='Роль по реакции на карточке МП')
-                channel = guild.get_channel(payload.channel_id) or await guild.fetch_channel(payload.channel_id)
-                message = channel.get_partial_message(payload.message_id)
-                # Сбрасываем только реакцию участника, чтобы эту же кнопку можно было нажать снова.
-                await message.remove_reaction(payload.emoji, member)
         except discord.NotFound:
             return
         except Exception as error:

@@ -32,10 +32,8 @@ class ReactionRoleTests(unittest.IsolatedAsyncioTestCase):
                                      fetch_member=AsyncMock(return_value=self.member))
         self.channel = SimpleNamespace(id=CHANNEL, guild=self.guild,
             permissions_for=MagicMock(return_value=discord.Permissions(view_channel=True, read_message_history=True,
-                add_reactions=True, manage_messages=True, send_messages=True)),
-            send=AsyncMock(return_value=self.message), fetch_message=AsyncMock(return_value=self.message),
-            get_partial_message=MagicMock(return_value=self.message))
-        self.guild.get_channel = MagicMock(return_value=self.channel)
+                add_reactions=True, send_messages=True)),
+            send=AsyncMock(return_value=self.message), fetch_message=AsyncMock(return_value=self.message))
         self.role = SimpleNamespace(id=ROLE, guild=self.guild, mention=f'<@&{ROLE}>',
                                     is_assignable=lambda: True, permissions=discord.Permissions.none())
         self.guild.get_role = MagicMock(return_value=self.role)
@@ -49,7 +47,7 @@ class ReactionRoleTests(unittest.IsolatedAsyncioTestCase):
                      member=self.member, emoji=discord.PartialEmoji(name=emoji_name))
         return SimpleNamespace(**(event | changes))
 
-    async def test_configured_card_grants_and_removes_role_and_resets_member_reaction(self):
+    async def test_configured_card_grants_and_removes_role_without_removing_reactions(self):
         await self.command.callback(self.interaction, self.channel, self.role, GRANT, REVOKE)
         self.assertTrue(self.bot.intents.guild_reactions)
         self.assertEqual([str(call.args[0]) for call in self.message.add_reaction.await_args_list], [GRANT, REVOKE])
@@ -60,8 +58,7 @@ class ReactionRoleTests(unittest.IsolatedAsyncioTestCase):
         self.member.add_roles.assert_awaited_once_with(self.role, reason='Роль по реакции на карточке МП')
         self.member.remove_roles.assert_awaited_once_with(self.role, reason='Роль по реакции на карточке МП')
         self.guild.fetch_member.assert_awaited_once_with(MEMBER)
-        self.assertEqual([(str(call.args[0]), call.args[1]) for call in self.message.remove_reaction.await_args_list],
-                         [(GRANT, self.member), (REVOKE, self.member)])
+        self.message.remove_reaction.assert_not_awaited()
 
     async def test_custom_emoji_uses_id_and_ignores_unrelated_reactions(self):
         emoji_id = 777777777777777777
