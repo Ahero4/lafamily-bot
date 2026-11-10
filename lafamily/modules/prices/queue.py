@@ -26,24 +26,18 @@ async def enqueue_notifications(store,message,report):
         prices[item]=(best,places)
         if best>=limit['base']:maxima[item]=True
         if limit['base']*95<=best*100<=limit['base']*100:near[item]=True
-    alerts = await database_call(
+    lines = {}
+    for item, (price, places) in prices.items():
+        prefix = f'🏆 **{item}: ${price}{bonus_price_text(report, item, price)}** · {places} · '
+        lines[item] = {
+            mode: BUYER_NUMBERS.sub(r' · **Скупщик** **\1** · ', prefix + label)
+            for mode, label in (('near', '95–100%'), ('max', 'максимум'))
+        }
+    await database_call(
         store, 'claim_price_alerts', str(message.guild.id), str(message.id), list(maxima), list(near),
         include_existing_matches=True,
+        queue_payload={'revision': revision, 'channel_id': str(message.channel.id), 'lines': lines},
     )
-    users={}
-    for alert in alerts:users.setdefault(alert['user_id'],[]).append(alert)
-    for user,items in users.items():
-        lines=[];attempts=[]
-        for alert in items:
-            item=alert['item'];price,places=prices[item]
-            label='95–100%' if alert['threshold']=='near' else 'максимум'
-            line=f'🏆 **{item}: ${price}{bonus_price_text(report,item,price)}** · {places} · {label}'
-            if sum(len(v)+1 for v in lines)+len(line)>1650:
-                await database_call(store,'enqueue_price_job',str(message.guild.id),str(message.id),revision,user,str(message.channel.id),'\n'.join(lines),attempts)
-                lines=[];attempts=[]
-            lines.append(line);attempts.append(alert['attempt_id'])
-        if lines:
-            await database_call(store,'enqueue_price_job',str(message.guild.id),str(message.id),revision,user,str(message.channel.id),'\n'.join(lines),attempts)
 
 
 class PriceQueue:
@@ -96,12 +90,20 @@ class PriceQueue:
             else:
                 if not await database_call(self.store,'current_price_job',job):
                     await database_call(self.store,'finish_price_job',job['id'],'failed','ExpiredPrice');return
-                body = BUYER_NUMBERS.sub(r' · **Скупщик** **\1** · ', job['body'])
+                body = await database_call(self.store, 'price_job_body', job)
+                if not body:
+                    await database_call(self.store, 'finish_price_job', job['id'], 'failed', 'SubscriptionChanged')
+                    return
+                formatted_body = BUYER_NUMBERS.sub(r' · **Скупщик** **\1** · ', body)
                 sent_at = datetime.now(MOSCOW).strftime('**%H:%M** %d.%m.%Y МСК')
-                content = (
-                    f"{body}\nОтправлено: {sent_at}.\n"
+                footer = (
+                    f"\nОтправлено: {sent_at}.\n"
                     f'https://discord.com/channels/{job["guild_id"]}/{job["channel_id"]}/{job["source_id"]}'
                 )
+                content = formatted_body + footer
+                if len(content) > 2000:
+                    # Старые задачи разбивались до добавления жирных подписей.
+                    content = body + footer
                 sending=True
                 await member.send(content=content, allowed_mentions=discord.AllowedMentions.none())
             message=SimpleNamespace(id=int(job['source_id']),guild=channel.guild,channel=channel)

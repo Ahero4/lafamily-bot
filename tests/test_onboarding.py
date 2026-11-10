@@ -103,6 +103,41 @@ class OnboardingTests(unittest.IsolatedAsyncioTestCase):
             await command.callback(interaction, None, None, None)
         self.assertIsNone(store.onboarding_settings('1'))
 
+    async def test_failed_entry_publication_preserves_working_settings(self):
+        store, service, member, interaction = self.reviewer_case(admin=True)
+        store.configure_onboarding('1', '20', '30', '4')
+        previous = store.onboarding_settings('1')
+        role = interaction.guild.get_role(4)
+        role.id = 4
+        permissions = SimpleNamespace(view_channel=True, send_messages=True, embed_links=True)
+        entry = SimpleNamespace(id=2, mention='<#2>', permissions_for=lambda member: permissions, send=AsyncMock())
+        review = SimpleNamespace(id=3, mention='<#3>', permissions_for=lambda member: permissions)
+        client = discord.Client(intents=discord.Intents.none())
+        self.addAsyncCleanup(client.close)
+        tree = discord.app_commands.CommandTree(client)
+        register_onboarding(tree, service, 1)
+        command = tree.get_command('заявки', guild=discord.Object(id=1)).get_command('настройки')
+
+        for error in (discord.Forbidden(SimpleNamespace(status=403, reason='Forbidden'), 'denied'),
+                      OSError('connection lost')):
+            with self.subTest(error=type(error).__name__):
+                entry.send.side_effect = error
+                with self.assertRaises(type(error)):
+                    await command.callback(interaction, entry, review, role)
+                self.assertEqual(store.onboarding_settings('1'), previous)
+
+        entry.send.side_effect = None
+        await command.callback(interaction, entry, review, role)
+        self.assertEqual(store.onboarding_settings('1'),
+                         {'guild_id': '1', 'entry_id': '2', 'review_id': '3', 'role_id': '4'})
+        store.configure_prices('1', '7', '40')
+        entry.id = 40
+        entry.send.reset_mock()
+        with self.assertRaises(UserError):
+            await command.callback(interaction, entry, review, role)
+        entry.send.assert_not_awaited()
+        self.assertEqual(store.onboarding_settings('1')['entry_id'], '2')
+
     def test_identity_validation(self):
         self.assertEqual(validate_identity(' Sin   Bertoni ', '15096')[2], 'Sin Bertoni | 15096')
         for name, static in [('Sin', '1'), ('@everyone Test', '1'), ('Sin Bertoni', '0'), ('Sin Bertoni', 'abc')]:

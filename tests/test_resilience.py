@@ -15,6 +15,7 @@ import discord
 from lafamily.async_database import DatabaseWorker
 from lafamily.database import Store
 from lafamily.diagnostics import error_trace, log_error
+from lafamily.errors import UserError
 from lafamily.modules.events.commands import EventCommands
 from lafamily.modules.events.models import Draft
 from lafamily.modules.events.service import EventService
@@ -100,6 +101,23 @@ class DraftFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.view.finished)
         self.assertFalse(replacement.finished)
         self.assertIn("заменён", original.edit_original_response.call_args.kwargs["content"])
+
+    async def test_slow_retirement_cannot_replace_a_newer_draft(self):
+        started, release = asyncio.Event(), asyncio.Event()
+        async def edit_old(**kwargs):
+            started.set()
+            await release.wait()
+        self.view.original = SimpleNamespace(edit_original_response=edit_old)
+        first = asyncio.create_task(self.service.new_view_async(replace(self.draft,request_id='first')))
+        await started.wait()
+        try:
+            latest = await self.service.new_view_async(replace(self.draft,request_id='latest'))
+        finally:
+            release.set()
+        with self.assertRaises(UserError):
+            await first
+        self.assertIs(self.service.views[(GUILD, ACTOR)], latest)
+        self.assertFalse(latest.finished)
 
     async def test_timeout_waits_for_current_confirmation(self):
         await self.view.lock.acquire()

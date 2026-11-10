@@ -16,7 +16,7 @@ from lafamily.database import Store
 from lafamily.errors import UserError
 from lafamily.modules.events.time import MOSCOW
 from lafamily.modules.prices.commands import register_price_commands
-from lafamily.modules.prices.delivery_reports import csv_file, format_dynamics, report_period
+from lafamily.modules.prices.delivery_reports import csv_file, format_dynamics, report_period, send_admin_delivery_report
 from lafamily.modules.prices.notifications import notify_maximum_prices
 from lafamily.modules.prices.parser import parse_prices
 
@@ -97,6 +97,22 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({a['admin_state'] for a in self.data()['attempts']}, {'uncertain'})
         await notify_maximum_prices(self.store, self.message, self.report)
         self.channel.send.assert_awaited_once()
+
+    async def test_interrupted_admin_report_is_not_sent_twice(self):
+        self.store.configure_admin_report_channel('1', '99', '3')
+        alerts = self.store.claim_price_alerts('1', '100', ['Медь'])
+        run_id = alerts[0]['run_id']
+        for alert in alerts:
+            self.store.finish_price_delivery(alert['attempt_id'], 'sent')
+        with patch.object(self.store, 'finish_price_admin_report', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                await send_admin_delivery_report(self.store, self.message, run_id)
+        self.assertEqual(self.store.price_delivery_summary('1', run_id)['admin_state'], 'sending')
+        self.assertFalse(self.store.claim_price_admin_report('1', run_id))
+        self.store.recover_price_jobs('1')
+        await send_admin_delivery_report(self.store, self.message, run_id)
+        self.channel.send.assert_awaited_once()
+        self.assertEqual(self.store.price_delivery_summary('1', run_id)['admin_state'], 'uncertain')
 
     async def test_pending_survives_restart_without_automatic_repeat(self):
         with tempfile.TemporaryDirectory() as folder:

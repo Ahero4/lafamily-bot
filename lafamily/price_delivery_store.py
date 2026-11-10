@@ -61,6 +61,11 @@ class PriceDeliveryStore:
         self.db.execute("UPDATE price_delivery_runs SET admin_state=?,admin_message_id=? WHERE id=?",
                         (state, message_id, run_id))
 
+    def claim_price_admin_report(self, guild_id, run_id):
+        result = self.db.execute("UPDATE price_delivery_runs SET admin_state='sending' "
+            "WHERE guild_id=? AND id=? AND admin_state='pending'", (guild_id, run_id))
+        return bool(result.rowcount)
+
     def price_delivery_summary(self, guild_id, run_id):
         row = self.db.execute('''SELECT r.*, COUNT(a.id) AS messages,
             COUNT(DISTINCT a.user_id) AS recipients,
@@ -68,7 +73,10 @@ class PriceDeliveryStore:
             SUM(a.state='sent') AS sent,
             SUM(a.state IN ('forbidden','not_found','failed')) AS failed,
             SUM(a.state='uncertain') AS uncertain, SUM(a.state='pending') AS pending
-            FROM price_delivery_runs r JOIN (SELECT MIN(id) AS id,run_id,user_id,state
+            FROM price_delivery_runs r JOIN (SELECT MIN(id) AS id,run_id,user_id,
+                CASE WHEN SUM(state='pending')>0 THEN 'pending'
+                     WHEN SUM(state='uncertain')>0 THEN 'uncertain'
+                     WHEN SUM(state='sent')>0 THEN 'sent' ELSE MIN(state) END AS state
                 FROM price_delivery_attempts GROUP BY run_id,COALESCE(message_group,'attempt-'||id)) a ON a.run_id=r.id
             WHERE r.guild_id=? AND r.id=?
             GROUP BY r.id''', (guild_id, run_id)).fetchone()
@@ -81,7 +89,10 @@ class PriceDeliveryStore:
             COUNT(a.id) AS messages, SUM(a.state='sent') AS sent,
             SUM(a.state IN ('forbidden','not_found','failed')) AS failed,
             SUM(a.state='uncertain') AS uncertain, SUM(a.state='pending') AS pending
-            FROM price_delivery_runs r JOIN (SELECT MIN(id) AS id,run_id,user_id,state
+            FROM price_delivery_runs r JOIN (SELECT MIN(id) AS id,run_id,user_id,
+                CASE WHEN SUM(state='pending')>0 THEN 'pending'
+                     WHEN SUM(state='uncertain')>0 THEN 'uncertain'
+                     WHEN SUM(state='sent')>0 THEN 'sent' ELSE MIN(state) END AS state
                 FROM price_delivery_attempts GROUP BY run_id,COALESCE(message_group,'attempt-'||id)) a ON a.run_id=r.id
             WHERE r.guild_id=? AND r.created_at>=? AND r.created_at<?
             GROUP BY day ORDER BY day''', (guild_id, start, end)).fetchall()

@@ -2,6 +2,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import discord
+
 from lafamily.database import Store
 from lafamily.errors import UserError
 from lafamily.modules.events.models import Draft
@@ -42,6 +44,36 @@ class HealthRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(UserError):await self.service.recover_report(self.guild,self.report['id'])
         self.channel.send.assert_awaited_once()
         self.assertEqual(self.store.participant_profile(G,U,('2000','2100'))['total'],10)
+
+    async def test_deleted_bound_card_can_be_recovered_again_without_new_points(self):
+        self.store.attach_message(G, self.report['id'], '800')
+        self.channel.fetch_message = AsyncMock(side_effect=discord.NotFound(
+            SimpleNamespace(status=404, reason='Not Found'), 'deleted'))
+        for message_id in (801, 802):
+            self.channel.send.return_value = SimpleNamespace(id=message_id)
+            await self.service.recover_report(self.guild, self.report['id'])
+            self.assertEqual(self.store.report(G, self.report['id'])['message_id'], str(message_id))
+        self.assertEqual(self.channel.send.await_count, 2)
+        self.assertEqual(self.store.participant_profile(G, U, ('2000', '2100'))['total'], 10)
+
+    async def test_inaccessible_card_keeps_binding_and_never_republishes(self):
+        self.store.attach_message(G, self.report['id'], '800')
+        self.channel.fetch_message = AsyncMock(side_effect=discord.Forbidden(
+            SimpleNamespace(status=403, reason='Forbidden'), 'no access'))
+        with self.assertRaises(discord.Forbidden):
+            await self.service.recover_report(self.guild, self.report['id'])
+        self.channel.send.assert_not_awaited()
+        self.assertEqual(self.store.report(G, self.report['id'])['message_id'], '800')
+
+    async def test_cancellation_during_recovery_is_reflected_in_the_card(self):
+        message = SimpleNamespace(id=800, edit=AsyncMock())
+        async def send(**kwargs):
+            self.store.cancel_report(G, U, self.report['id'], 'Ошибка')
+            return message
+        self.channel.send.side_effect = send
+        await self.service.recover_report(self.guild, self.report['id'])
+        self.assertIn('отменено', message.edit.call_args.kwargs['embed'].title)
+        self.assertEqual(self.store.participant_profile(G, U, ('2000', '2100'))['total'], 0)
 
     async def test_monitor_only_announces_changed_actionable_state(self):
         self.store.configure_admin_report_channel(G,U,C)

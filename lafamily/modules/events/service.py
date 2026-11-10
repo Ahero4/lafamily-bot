@@ -50,11 +50,13 @@ class EventService:
 
     async def new_view_async(self, draft: Draft) -> ReportView:
         previous = self.views.get((draft.guild_id, draft.organizer_id))
+        # Регистрируем замену до сетевого ожидания, чтобы поздний запрос оставался текущим.
+        view = self.new_view(draft)
         if previous:
-            if previous.lock.locked():
-                raise UserError("Предыдущий отчёт ещё сохраняется. Дождитесь результата.")
             await previous.retire("Черновик заменён новым. Используйте новое сообщение /мп создать.")
-        return self.new_view(draft)
+        if view.finished:
+            raise UserError("Черновик уже заменён более новым запросом. Используйте последний отчёт.")
+        return view
 
     async def confirm(self, interaction: discord.Interaction, view: ReportView) -> str:
         draft = view.draft

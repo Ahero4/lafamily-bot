@@ -135,3 +135,26 @@ class PriceDmRetentionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.price_subscription_modes('1', '123'), {'Медь': 'max'})
         self.assertEqual(self.store.price_delivery_summary('1', 1)['sent'], 1)
         self.assertFalse(any(row['kind'] == 'cleanup' for row in self.store.unfinished_operations('1')))
+
+    async def test_retry_after_queue_failure_and_duplicate_after_new_subscription(self):
+        with patch.object(self.store, '_enqueue_price_job', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                await self.post()
+        self.assertFalse(self.store.price_publication('1', '100')['notifications_complete'])
+        self.member.send.assert_not_awaited()
+        self.assertEqual(await self.post(), 'already_done')
+        self.member.send.assert_awaited_once()
+        self.assertTrue(self.store.price_publication('1', '100')['notifications_complete'])
+
+        self.store.set_price_subscription('1', '456', 'Медь', True)
+        self.assertEqual(await self.post(), 'already_done')
+        self.member.send.assert_awaited_once()
+        with patch('lafamily.modules.prices.service.RENDER_VERSION', 999):
+            self.assertEqual(await self.post(), 'updated')
+        self.member.send.assert_awaited_once()
+
+    async def test_manual_processing_stays_silent_on_duplicate_automatic_event(self):
+        await self.post(notify=False)
+        self.assertTrue(self.store.price_publication('1', '100')['notifications_complete'])
+        await self.post()
+        self.member.send.assert_not_awaited()

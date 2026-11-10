@@ -91,9 +91,17 @@ class HealthService:
             report=await database_call(self.store,'report',str(guild.id),number)
             channel=await self.client.events.channel(guild,report['channel_id'],allow_thread='barn_amount' in report)
             if report['message_id']:
-                message=await channel.fetch_message(int(report['message_id']))
-                await message.edit(embed=report_embed(report),allowed_mentions=discord.AllowedMentions.none())
-                return 'Карточка отчёта обновлена. Начисления не менялись.'
+                try:
+                    message=await channel.fetch_message(int(report['message_id']))
+                    await message.edit(embed=report_embed(report),allowed_mentions=discord.AllowedMentions.none())
+                except discord.NotFound:
+                    cleared = await database_call(self.store, 'forget_report_message',
+                        str(guild.id), number, report['message_id'])
+                    if not cleared:
+                        raise UserError('Привязка карточки изменилась. Повторите восстановление.')
+                else:
+                    await self.sync_report_cancellation(message, report)
+                    return 'Карточка отчёта обновлена. Начисления не менялись.'
             if not channel.permissions_for(guild.me).read_message_history:
                 raise UserError('Для безопасного поиска карточки нужно право чтения истории.')
             expected=report_embed(report)
@@ -102,6 +110,7 @@ class HealthService:
                 if message.author.id==self.client.user.id and message.embeds and message.embeds[0].title in titles:
                     await database_call(self.store,'attach_message',str(guild.id),number,str(message.id))
                     await message.edit(embed=expected,allowed_mentions=discord.AllowedMentions.none())
+                    await self.sync_report_cancellation(message, report)
                     return 'Существующая карточка найдена и привязана. Нового начисления нет.'
             if not await database_call(self.store,'claim_report_recovery',str(guild.id),number):
                 raise UserError('Предыдущая публикация не подтверждена. Новая отправка заблокирована; проверьте канал вручную.')
@@ -112,7 +121,14 @@ class HealthService:
                 if 400<=error.status<500 and error.status!=408:
                     await database_call(self.store,'release_report_recovery',str(guild.id),number)
                 raise
+            await self.sync_report_cancellation(message, report)
             return 'Карточка опубликована; отчёт и баллы повторно не создавались.'
+
+    async def sync_report_cancellation(self, message, published):
+        # Отмена могла завершиться, пока Discord публиковал или редактировал карточку.
+        latest = await database_call(self.store, 'report', published['guild_id'], published['id'])
+        if latest['cancelled_at'] != published['cancelled_at']:
+            await message.edit(embed=report_embed(latest), allowed_mentions=discord.AllowedMentions.none())
 
 
 def register_health(tree,service,guild_id):

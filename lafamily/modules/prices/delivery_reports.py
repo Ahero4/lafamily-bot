@@ -56,6 +56,8 @@ def format_dynamics(daily, view):
 
 async def send_admin_delivery_report(store, message, run_id):
     guild_id = str(message.guild.id)
+    if not await database_call(store, 'claim_price_admin_report', guild_id, run_id):
+        return
     channel_id = await database_call(store, 'admin_report_channel', guild_id)
     if not channel_id:
         await database_call(store, 'finish_price_admin_report', run_id, 'disabled')

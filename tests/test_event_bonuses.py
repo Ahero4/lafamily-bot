@@ -194,6 +194,23 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((view.draft.mvp_id,view.draft.mvp_bonus),(None,0))
         self.assertTrue(view.needs_refresh)
 
+    async def test_clear_resets_mvp_and_failed_clear_keeps_both_roster_and_mvp(self):
+        self.store.configure_event_bonuses(G,A,self.kind,False,0,7)
+        interaction = self.interaction()
+        await self.commands.create_report.callback(self.commands,interaction,str(self.kind))
+        view = self.service.views[(G,A)]
+        view.draft.members = [A,B]
+        await view.dispatch('mvp',interaction,[SimpleNamespace(id=int(B),bot=False)])
+        interaction.edit_original_response.side_effect = RuntimeError('network')
+        with self.assertRaises(RuntimeError):
+            await view.dispatch('clear',interaction)
+        self.assertEqual((view.draft.members,view.draft.mvp_id,view.draft.mvp_bonus),([A,B],B,7))
+        interaction.edit_original_response.side_effect = None
+        await view.dispatch('clear',interaction)
+        self.assertEqual((view.draft.members,view.draft.mvp_id,view.draft.mvp_bonus),([],None,0))
+        fields = interaction.edit_original_response.call_args.kwargs['embeds']
+        self.assertNotIn(f'<@{B}>', str([embed.to_dict() for embed in fields]))
+
     async def test_manager_changes_foreign_draft_and_confirms_without_changing_author(self):
         self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
         owner=self.interaction()

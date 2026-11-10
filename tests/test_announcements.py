@@ -5,7 +5,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 
@@ -13,6 +13,7 @@ from lafamily.database import Store
 from lafamily.errors import UserError
 from lafamily.modules.announcements import AnnouncementService, AnnouncementCommands, due_occurrences, parse_days, parse_clock, parse_start
 from lafamily.modules.events.time import timestamp
+from lafamily.modules.planning import SignupView
 
 G='111111111111111111'
 START=datetime(2026,11,2,17,0,tzinfo=UTC)  # 20:00 Москва
@@ -86,6 +87,26 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
         await self.service.tick(START)
         self.channel.send.assert_not_awaited()
 
+    async def test_signup_recovers_when_announcement_message_binding_fails(self):
+        with patch.object(self.store, 'bind_planned_message', side_effect=RuntimeError('database busy')):
+            with self.assertLogs('lafamily.errors', level='ERROR'):
+                await self.service.tick(START - timedelta(minutes=15))
+        payload = self.channel.send.call_args.kwargs
+        bot_user = SimpleNamespace(id=999)
+        message = SimpleNamespace(id=789, author=bot_user, embeds=[payload['embed']], edit=AsyncMock())
+        interaction = SimpleNamespace(guild=self.guild, guild_id=int(G), channel=self.channel, channel_id=456,
+            user=SimpleNamespace(id=222222222222222222, bot=False), message=message,
+            client=SimpleNamespace(user=bot_user), response=SimpleNamespace(defer=AsyncMock()),
+            edit_original_response=AsyncMock())
+        view = SignupView(self.store)
+        self.addCleanup(view.stop)
+        with patch('lafamily.planning_store.timestamp', return_value=timestamp(START - timedelta(minutes=10))):
+            await view.choose(interaction, 'going')
+        event = self.store.planned_by_message(G, '789')
+        self.assertEqual(event['going'], ['222222222222222222'])
+        await self.service.tick(START - timedelta(minutes=9))
+        self.channel.send.assert_awaited_once()
+
     async def test_failures_and_permissions_do_not_duplicate_tags(self):
         self.channel.permissions_for.return_value.send_messages=False
         with self.assertLogs('lafamily.errors',level='ERROR'):
@@ -126,7 +147,9 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
         self.channel.fetch_message.return_value=SimpleNamespace(attachments=[])
         with self.assertLogs('lafamily.errors',level='ERROR'):
             await self.service.tick(START+timedelta(days=1)-timedelta(minutes=15))
-        self.assertIn('Картинку',self.channel.send.call_args.kwargs['embed'].footer.text)
+        embed = self.channel.send.call_args.kwargs['embed']
+        self.assertIn('Картинку', next(field.value for field in embed.fields if field.name == 'Картинка'))
+        self.assertTrue(embed.footer.text.startswith('lafamily:planned:'))
         attachment.to_file.assert_awaited_once()
 
     async def test_admin_commands_runtime_access_and_invalid_schedule(self):

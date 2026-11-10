@@ -44,6 +44,8 @@ class ConfirmAction(discord.ui.View):
         async with self.lock:
             if interaction.user.id!=self.owner or interaction.guild_id!=self.guild:
                 raise UserError('Это подтверждение другого пользователя.')
+            if self.finished or self.is_finished():
+                raise UserError('Подтверждение уже завершено или истекло.')
             self.finished = True
             self.stop()
             await interaction.response.edit_message(content='Действие отменено.',view=None,embeds=[])

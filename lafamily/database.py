@@ -388,12 +388,14 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
 
     def claim_price_publication(self, guild_id: str, channel_id: str, source_id: str, fingerprint: str) -> bool:
         # Запись до отправки защищает от повторной публикации после перезапуска или неоднозначного сбоя.
-        result = self.db.execute("INSERT OR IGNORE INTO price_publications VALUES (?, ?, ?, NULL, ?, 'pending')",
+        result = self.db.execute("INSERT OR IGNORE INTO price_publications "
+                                 "(source_id,guild_id,channel_id,result_id,fingerprint,state,notifications_complete) "
+                                 "VALUES (?, ?, ?, NULL, ?, 'pending', 0)",
                                  (source_id, guild_id, channel_id, fingerprint))
         return bool(result.rowcount)
 
     def save_price_publication(self, guild_id: str, source_id: str, result_id: str, fingerprint: str):
-        self.db.execute("""UPDATE price_publications SET result_id=?, fingerprint=?, state='published'
+        self.db.execute("""UPDATE price_publications SET result_id=?, fingerprint=?, state='published', notifications_complete=0
             WHERE guild_id=? AND source_id=?""", (result_id, fingerprint, guild_id, source_id))
 
     def uncertain_price_publication(self, guild_id: str, source_id: str):
@@ -427,7 +429,7 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
                                 (guild_id, user_id, item))
                 if modes is not None:
                     # Смена порога начинает новый цикл только для изменённого товара.
-                    self.db.execute("UPDATE price_subscriptions SET threshold=?, notified=0 WHERE guild_id=? AND user_id=? AND item=? AND threshold<>?",
+                    self.db.execute("UPDATE price_subscriptions SET threshold=?, notified=0, notified_attempt_id=NULL WHERE guild_id=? AND user_id=? AND item=? AND threshold<>?",
                                     (modes[item], guild_id, user_id, item, modes[item]))
         return self.price_subscriptions(guild_id, user_id)
 
@@ -444,7 +446,7 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
             (guild_id, user_id))]
 
     def claim_price_alerts(self, guild_id: str, source_id: str, maximum_items: list[str], near_items=None,
-                           *, include_existing_matches=False):
+                           *, include_existing_matches=False, queue_payload=None):
         # Флаг сохраняется ДО отправки: неоднозначный сетевой сбой не вызывает повторных тегов.
         # Старые отчёты не сбрасывают флаги текущих цен при ручной обработке.
         with self.transaction():
@@ -457,20 +459,35 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
                     return []
             self.db.execute("INSERT INTO price_alert_cursor VALUES (?, ?) ON CONFLICT(guild_id) DO UPDATE SET source_id=excluded.source_id",
                             (guild_id, source_id))
+            if queue_payload is not None:
+                self._expire_queued_price_jobs(guild_id, source_id, queue_payload['revision'])
             subscriptions = self.db.execute("SELECT * FROM price_subscriptions WHERE guild_id=?", (guild_id,)).fetchall()
             alerts = []
             new_recipients = set()
+            new_signals = set()
             for row in subscriptions:
                 matches_threshold = row['item'] in ((near_items or []) if row['threshold'] == 'near' else maximum_items)
                 if matches_threshold and (include_existing_matches or not row['notified']):
                     alerts.append({'user_id': row['user_id'], 'item': row['item'], 'threshold': row['threshold']})
                     if not row['notified']:
                         new_recipients.add(row['user_id'])
+                        new_signals.add((row['user_id'], row['item']))
                 self.db.execute("UPDATE price_subscriptions SET notified=? WHERE guild_id=? AND user_id=? AND item=?",
                                 (int(matches_threshold), guild_id, row['user_id'], row['item']))
+                if not matches_threshold:
+                    self.db.execute("UPDATE price_subscriptions SET notified_attempt_id=NULL WHERE guild_id=? AND user_id=? AND item=?",
+                                    (guild_id, row['user_id'], row['item']))
             # Уже подходящие товары дополняют ЛС получателя только при новом сигнале.
             alerts = [alert for alert in alerts if alert['user_id'] in new_recipients]
-            return self.track_price_alerts(guild_id, source_id, alerts)
+            alerts = self.track_price_alerts(guild_id, source_id, alerts)
+            for alert in alerts:
+                if (alert['user_id'], alert['item']) in new_signals:
+                    self.db.execute("UPDATE price_subscriptions SET notified_attempt_id=? WHERE guild_id=? AND user_id=? AND item=?",
+                                    (alert['attempt_id'], guild_id, alert['user_id'], alert['item']))
+            if queue_payload is not None:
+                self._queue_claimed_price_alerts(guild_id, source_id, alerts, **queue_payload)
+                self.finish_price_notifications(guild_id, source_id)
+            return alerts
 
     def release_channel(self, guild_id):
         row = self.db.execute('SELECT * FROM release_settings WHERE guild_id=?', (guild_id,)).fetchone()

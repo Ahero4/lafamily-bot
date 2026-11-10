@@ -129,6 +129,12 @@ def register_insights(tree, client, store, guild_id):
         await interaction.response.defer(ephemeral=True)
         if item not in LIMITS:
             raise UserError('Выберите товар из подсказок.')
+        settings = await database_call(store, 'price_settings', str(interaction.guild_id))
+        if not settings:
+            raise UserError('Канал цен ещё не настроен.')
+        channel = await interaction.guild.fetch_channel(int(settings['channel_id']))
+        if not channel.permissions_for(interaction.user).view_channel:
+            raise UserError('Нет доступа к каналу цен.')
         end = datetime.now(MOSCOW).replace(hour=0,minute=0,second=0,microsecond=0)+timedelta(days=1)
         rows = await database_call(store,'price_history_data',str(interaction.guild_id),item,timestamp(end-timedelta(days=days)),timestamp(end))
         if not rows:

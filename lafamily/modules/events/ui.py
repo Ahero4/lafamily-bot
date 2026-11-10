@@ -252,9 +252,13 @@ class ReportView(discord.ui.View):
                 content = await self.service.confirm(interaction, self)
                 await interaction.edit_original_response(content=content, embeds=[], view=None)
                 return
+            previous_mvp = (self.draft.mvp_id, self.draft.mvp_bonus)
+            if self.draft.mvp_id not in members:
+                self.draft.mvp_id, self.draft.mvp_bonus = None, 0
             try:
                 await interaction.edit_original_response(**self.payload(members))
             except BaseException:
+                self.draft.mvp_id, self.draft.mvp_bonus = previous_mvp
                 self.needs_refresh = True
                 self.payload()  # Восстанавливаем локальное состояние кнопки подтверждения.
                 raise

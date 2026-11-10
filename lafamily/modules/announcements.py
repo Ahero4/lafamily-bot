@@ -161,7 +161,7 @@ class AnnouncementService:
                                 image_warning = ' Картинку загрузить не удалось.'
                                 log_error('Недоступна картинка анонса; будет отправлен текст', error)
                         if image_warning:
-                            embed.set_footer(text=image_warning.strip())
+                            embed.add_field(name='Картинка', value=image_warning.strip(), inline=False)
                         if (datetime.now(UTC) if supplied_now is None else supplied_now) >= start:
                             continue
                         claimed = await database_call(self.store, 'claim_announcement', row['id'], timestamp(start))
@@ -170,6 +170,7 @@ class AnnouncementService:
                         try:
                             planned=await database_call(self.store,'create_planned_event',str(self.guild_id),'0',
                                 f'announcement:{row["id"]}:{timestamp(start)}',str(channel.id),row['name'][:80],timestamp(start),100,now=now)
+                            embed.set_footer(text=f'lafamily:planned:{planned["id"]}')
                             embed.add_field(name='Запись на МП',value=f'Участвуйте кнопками ниже. Состав: /мп запись состав номер:{planned["id"]}. Мест: 100.',inline=False)
                             message = await channel.send(content=f'<@&{role.id}>', embed=embed,
                                 view=SignupView(self.store),

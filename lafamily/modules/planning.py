@@ -118,6 +118,7 @@ def register_planning(tree,client,store,guild_id):
     async def report(interaction:discord.Interaction,number:app_commands.Range[int,1],kind:str):
         await interaction.response.defer(thinking=True)
         await require_access_async(interaction,store,'organizer')
+        await database_call(store, 'ensure_channel_separation', str(interaction.guild_id), str(interaction.channel_id))
         event=await database_call(store,'planned_event',str(interaction.guild_id),number)
         if event['starts_at']>timestamp():raise UserError('До начала МП отчёт создать нельзя.')
         if not kind.isdigit():raise UserError('Выберите вид МП из подсказки.')
@@ -131,7 +132,9 @@ def register_planning(tree,client,store,guild_id):
             note=f'По записи #{number}. Проверьте фактическое участие.',members=list(event['going']),
             win_enabled=bool(item['win_enabled']),available_win_bonus=item['win_bonus'],available_mvp_bonus=item['mvp_bonus'])
         view=await client.events.new_view_async(draft)
-        await interaction.edit_original_response(**view.payload());view.bind(interaction)
+        view.bind(interaction)
+        message = await interaction.edit_original_response(**view.payload())
+        view.message = interaction.channel.get_partial_message(message.id)
 
     @report.autocomplete('kind')
     async def kinds(interaction,current):

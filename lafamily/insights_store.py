@@ -57,13 +57,13 @@ class InsightsStore:
 
     def similar_reports(self, draft):
         when = datetime.fromisoformat(draft.occurred_at.replace('Z','+00:00'))
-        rows = self.db.execute('''SELECT id FROM reports WHERE guild_id=? AND type_name=?
+        rows = self.db.execute('''SELECT r.id FROM reports r WHERE guild_id=? AND type_name=?
             AND cancelled_at IS NULL AND request_id<>? AND occurred_at>=? AND occurred_at<=?
-            ORDER BY id DESC LIMIT 30''', (draft.guild_id,draft.type_name,draft.request_id,
-                timestamp(when-timedelta(minutes=30)),timestamp(when+timedelta(minutes=30))))
-        members = set(draft.members)
-        return [row['id'] for row in rows if members.intersection(
-            r['user_id'] for r in self.db.execute('SELECT user_id FROM report_members WHERE report_id=?',(row['id'],)))]
+            AND EXISTS (SELECT 1 FROM report_members m WHERE m.report_id=r.id
+                AND m.user_id IN (SELECT value FROM json_each(?)))
+            ORDER BY r.id DESC LIMIT 30''', (draft.guild_id,draft.type_name,draft.request_id,
+                timestamp(when-timedelta(minutes=30)),timestamp(when+timedelta(minutes=30)),json.dumps(draft.members)))
+        return [row['id'] for row in rows]
 
     def duplicate_report_key(self, draft):
         matches = self.similar_reports(draft)
@@ -201,6 +201,16 @@ class InsightsStore:
 
     def claim_report_recovery(self,guild_id,number):
         return bool(self.db.execute('INSERT OR IGNORE INTO report_recovery VALUES (?,?)',(guild_id,number)).rowcount)
+
+    def forget_report_message(self, guild_id, number, message_id):
+        """Сбросить привязку только после подтверждённого удаления той же карточки."""
+        with self.transaction():
+            changed = self.db.execute(
+                'UPDATE reports SET message_id=NULL WHERE guild_id=? AND id=? AND message_id=?',
+                (guild_id, number, message_id)).rowcount
+            if changed:
+                self.release_report_recovery(guild_id, number)
+            return bool(changed)
 
     def release_report_recovery(self,guild_id,number):
         self.db.execute('DELETE FROM report_recovery WHERE guild_id=? AND report_id=?',(guild_id,number))

@@ -76,7 +76,8 @@ class PriceService:
                     raise UserError('Предыдущая отправка этого сообщения не подтверждена. Исходник сохранён; '
                                     'автоповтор отключён, чтобы не создавать дубли. Проверьте канал и журнал ошибок.')
                 if existing['fingerprint'] == fingerprint:
-                    await self.record_price_update(message, report, notify=False)
+                    await self.record_price_update(message, report,
+                        notify=notify and not existing['notifications_complete'])
                     await self.cleanup_channel(message)
                     return 'already_done'
                 # Если источник отредактирован, обновляем своё сообщение вместо новой публикации.
@@ -86,8 +87,11 @@ class PriceService:
                     raise UserError('Обработанное сообщение удалено. Исходник сохранён; автоматический повтор не выполняется.') from error
                 # Очистка старых embed-карточек обязательна при переходе на Components V2.
                 await result.edit(content=None, embeds=[], **payload)
+                same_prices = await database_call(self.store, 'is_current_price_dm_revision',
+                                                  guild_id, source_id, price_dm_revision(report))
                 await database_call(self.store, 'save_price_publication', guild_id, source_id, existing['result_id'], fingerprint)
-                await self.record_price_update(message, report, notify=notify)
+                await self.record_price_update(message, report,
+                    notify=notify and (not existing['notifications_complete'] or not same_prices))
                 await self.cleanup_channel(message)
                 return 'updated'
             claimed = await database_call(self.store, 'claim_price_publication', guild_id, str(message.channel.id), source_id, fingerprint)
@@ -151,11 +155,16 @@ class PriceService:
     async def record_price_update(self, message, report, *, notify):
         guild_id, source_id = str(self.guild_id), str(message.id)
         revision = price_dm_revision(report)
-        if not await database_call(self.store, 'activate_price_dm_revision', guild_id, source_id, revision):
-            return
-        await database_call(self.store, 'save_price_history', guild_id, source_id, revision, report)
+        # Новая редакция и очередь меняются между отправками, а не посреди одной доставки.
+        async with self.queue.lock:
+            if not await database_call(self.store, 'activate_price_dm_revision', guild_id, source_id, revision):
+                return
+            await database_call(self.store, 'save_price_history', guild_id, source_id, revision, report)
+            if notify:
+                await enqueue_notifications(self.store, message, report)
+            else:
+                await database_call(self.store, 'finish_price_notifications', guild_id, source_id)
         if notify:
-            await enqueue_notifications(self.store, message, report)
             await self.queue.drain()
 
     async def notify_subscribers(self, message, report):

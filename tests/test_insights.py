@@ -56,6 +56,17 @@ class InsightsTests(unittest.TestCase):
         with self.assertRaises(UserError):self.store.transition_payout(G,U,sheet['id'],'approved')
         with self.assertRaises(UserError):self.store.payout_sheet('other',sheet['id'])
 
+    def test_other_rosters_do_not_hide_an_older_similar_report(self):
+        original = self.store.create_report(self.draft)
+        for index in range(30):
+            other = replace(self.draft, request_id=f'other-{index}',
+                members=[str(444444444444444444 + index)], mvp_id=None, mvp_bonus=0)
+            self.store.create_report(other)
+        repeated = replace(self.draft, request_id='repeated', enforce_duplicates=True)
+        self.assertEqual(self.store.similar_reports(repeated), [original['id']])
+        with self.assertRaises(UserError):
+            self.store.create_report(repeated)
+
     def test_second_approved_sheet_for_same_week_is_rejected(self):
         self.store.create_report(self.draft)
         a=self.store.create_payout_sheet(G,U,'1',week_range(),100)

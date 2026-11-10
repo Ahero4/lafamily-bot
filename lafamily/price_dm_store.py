@@ -2,6 +2,10 @@
 
 
 class PriceDmStore:
+    def is_current_price_dm_revision(self, guild_id, source_id, revision):
+        return self.db.execute('SELECT 1 FROM price_dm_current WHERE guild_id=? AND source_id=? AND revision=?',
+                               (guild_id, source_id, revision)).fetchone() is not None
+
     def init_price_dms(self):
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS price_dm_current (

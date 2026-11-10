@@ -1,4 +1,5 @@
 import tempfile
+import asyncio
 import unittest
 from datetime import UTC,datetime,timedelta
 from pathlib import Path
@@ -132,6 +133,28 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ConfirmationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_waiting_for_confirmation_cannot_claim_action_was_cancelled(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def apply(interaction):
+            entered.set()
+            await release.wait()
+            return 'Ведомость утверждена.'
+        original = SimpleNamespace(user=SimpleNamespace(id=int(U)),guild_id=int(G))
+        view = ConfirmAction(None,original,'admin',apply)
+        interaction = SimpleNamespace(user=original.user,guild_id=int(G),guild=object(),
+            permissions=discord.Permissions(administrator=True),
+            response=SimpleNamespace(defer=AsyncMock(),edit_message=AsyncMock()),edit_original_response=AsyncMock())
+        confirm = asyncio.create_task(view.confirm.callback(interaction))
+        await entered.wait()
+        cancel = asyncio.create_task(view.cancel.callback(interaction))
+        await asyncio.sleep(0)
+        release.set()
+        await confirm
+        with self.assertRaises(UserError):
+            await cancel
+        interaction.response.edit_message.assert_not_awaited()
+        self.assertEqual(interaction.edit_original_response.call_args.kwargs['content'],'Ведомость утверждена.')
+
     async def test_other_user_and_revoked_permissions_cannot_confirm(self):
         store=Store(':memory:');self.addCleanup(store.close)
         original=SimpleNamespace(user=SimpleNamespace(id=int(U)),guild_id=int(G))

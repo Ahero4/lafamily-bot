@@ -301,6 +301,10 @@ def register_onboarding(tree, service, guild_id):
             permissions = channel.permissions_for(interaction.guild.me)
             if not (permissions.view_channel and permissions.send_messages and permissions.embed_links):
                 raise UserError('Боту нужны просмотр, отправка сообщений и вставка ссылок в обоих каналах.')
-        await database_call(service.store, 'configure_onboarding', str(interaction.guild_id), str(entry.id), str(review.id), str(role.id))
-        await entry.send('**Добро пожаловать!** Нажмите кнопку, введите имя, фамилию и Static ID, затем отправьте заявку. После одобрения заявки организатором, руководством или администратором вы получите роль и никнейм.', view=EntryView(service))
+        async with service.lock:
+            for channel in (entry, review):
+                await database_call(service.store, 'ensure_channel_separation', str(interaction.guild_id), str(channel.id))
+            # Прежняя форма остаётся действующей, пока новая не опубликована.
+            await entry.send('**Добро пожаловать!** Нажмите кнопку, введите имя, фамилию и Static ID, затем отправьте заявку. После одобрения заявки организатором, руководством или администратором вы получите роль и никнейм.', view=EntryView(service))
+            await database_call(service.store, 'configure_onboarding', str(interaction.guild_id), str(entry.id), str(review.id), str(role.id))
         await interaction.edit_original_response(content=f'Форма опубликована в {entry.mention}, заявки поступают в {review.mention}. Выдаваемая роль: {role.mention}.', allowed_mentions=discord.AllowedMentions.none())
