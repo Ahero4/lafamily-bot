@@ -42,7 +42,16 @@ class AnnouncementTimeTests(unittest.TestCase):
         for value in ('24:00','9:30','12:60'):
             with self.assertRaises(UserError):parse_clock(value)
         self.assertEqual(parse_start('2026-11-02 20:00',START-timedelta(hours=1)),timestamp(START))
-        with self.assertRaises(UserError):parse_start('2026-11-02 20:00',START-timedelta(minutes=14))
+        self.assertEqual(parse_start('2026-11-02 20:00',START-timedelta(minutes=14)), timestamp(START))
+        self.assertEqual(parse_start('2026-11-02 20:00',START+timedelta(days=1)), timestamp(START))
+
+    def test_time_without_date_uses_today_in_moscow(self):
+        self.assertEqual(parse_start('20:00', START - timedelta(minutes=1)), timestamp(START))
+        midnight = datetime(2026, 11, 1, 21, 0, tzinfo=UTC)
+        self.assertEqual(parse_start('00:05', midnight), timestamp(midnight + timedelta(minutes=5)))
+        for invalid in ('24:00', '12:60', '2026-02-30 12:00'):
+            with self.subTest(value=invalid), self.assertRaises(UserError):
+                parse_start(invalid, START)
 
 
 class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
@@ -86,6 +95,20 @@ class AnnouncementTests(unittest.IsolatedAsyncioTestCase):
         self.store.create_announcement_schedule(G,self.template,'once',timestamp(START),None,None)
         await self.service.tick(START)
         self.channel.send.assert_not_awaited()
+
+    async def test_once_command_sends_nearby_and_past_start_immediately(self):
+        self.store.disable_announcement_schedule(G, self.schedule)
+        commands = AnnouncementCommands(self.service)
+        for now, has_signup in ((START - timedelta(minutes=5), True), (START + timedelta(minutes=1), False)):
+            self.channel.send.reset_mock()
+            with patch('lafamily.modules.announcements.datetime', wraps=datetime) as clock:
+                clock.now.return_value = now
+                await commands.once.callback(commands, self.notice_interaction(), str(self.template), '2026-11-02 20:00')
+                await self.service.tick(now)
+            self.channel.send.assert_awaited_once()
+            payload = self.channel.send.call_args.kwargs
+            self.assertEqual(payload['view'] is not None, has_signup)
+            self.assertEqual(payload['content'], '<@&123>')
 
     async def test_signup_recovers_when_announcement_message_binding_fails(self):
         with patch.object(self.store, 'bind_planned_message', side_effect=RuntimeError('database busy')):

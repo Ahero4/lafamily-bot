@@ -14,6 +14,18 @@ def timestamp(value: datetime | None = None) -> str:
     return (value or datetime.now(UTC)).astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def parse_start(value: str, now: datetime | None = None) -> str:
+    value = value.strip()
+    if re.fullmatch(r'[0-9]{2}:[0-9]{2}', value):
+        today = (now or datetime.now(UTC)).astimezone(MOSCOW).date()
+        value = f'{today.isoformat()} {value}'
+    try:
+        start = datetime.strptime(value, '%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW)
+    except ValueError as error:
+        raise UserError('Укажите ЧЧ:ММ для сегодняшнего дня или ГГГГ-ММ-ДД ЧЧ:ММ по Москве.') from error
+    return timestamp(start)
+
+
 def parse_event_date(value: str | None, now: datetime | None = None) -> str:
     now = now or datetime.now(UTC)
     # В подсказке хранится маркер, а не время её открытия: оно берётся при создании отчёта.

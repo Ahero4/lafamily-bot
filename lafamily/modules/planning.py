@@ -13,7 +13,7 @@ from lafamily.errors import UserError
 from lafamily.permissions import require_access_async
 from lafamily.responses import send_error
 from lafamily.modules.events.models import Draft
-from lafamily.modules.events.time import MOSCOW,timestamp
+from lafamily.modules.events.time import timestamp, parse_start
 
 
 def signup_embed(event):
@@ -75,12 +75,12 @@ def register_planning(tree,client,store,guild_id):
     @group.command(name='создать',description='Открыть запись на будущее МП',extras={'access':'organizer'})
     @app_commands.rename(name='название',start='начало',capacity='мест',reminder='напоминание')
     @app_commands.describe(reminder='Напомнить в этом канале за 15 минут до начала. По умолчанию включено.')
+    @app_commands.describe(start='ЧЧ:ММ — сегодня по Москве, или ГГГГ-ММ-ДД ЧЧ:ММ')
     async def create(interaction:discord.Interaction,name:app_commands.Range[str,1,80],start:str,
                      capacity:app_commands.Range[int,1,100]=100,reminder:bool=True):
         await interaction.response.defer(ephemeral=True)
         await require_access_async(interaction,store,'organizer')
-        try: begins=timestamp(datetime.strptime(start,'%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW))
-        except ValueError:raise UserError('Начало: ГГГГ-ММ-ДД ЧЧ:ММ по Москве.')
+        begins = parse_start(start)
         await client.events.channel(interaction.guild,str(interaction.channel_id))
         event=await database_call(store,'create_planned_event',str(interaction.guild_id),str(interaction.user.id),str(interaction.id),str(interaction.channel_id),name,begins,capacity,reminder=reminder)
         if event['message_id']:

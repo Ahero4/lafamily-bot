@@ -13,7 +13,7 @@ from lafamily.async_database import database_call
 from lafamily.confirmations import ConfirmAction
 from lafamily.diagnostics import log_error
 from lafamily.errors import UserError
-from lafamily.modules.events.time import MOSCOW, timestamp, display_date
+from lafamily.modules.events.time import MOSCOW, timestamp, display_date, parse_start
 from lafamily.permissions import require_access_async
 from lafamily.responses import send_error
 from lafamily.modules.planning import SignupView
@@ -53,16 +53,6 @@ def due_notice_day(notice, now):
     if scheduled <= local < scheduled + NOTICE_WINDOW:
         return local.date().isoformat()
     return None
-
-
-def parse_start(value, now=None):
-    try:
-        start = datetime.strptime(value, '%Y-%m-%d %H:%M').replace(tzinfo=MOSCOW).astimezone(UTC)
-    except ValueError as error:
-        raise UserError('Дата: ГГГГ-ММ-ДД ЧЧ:ММ по Москве.') from error
-    if start < (now or datetime.now(UTC)) + timedelta(minutes=15):
-        raise UserError('До начала должно оставаться не менее 15 минут.')
-    return timestamp(start)
 
 
 def due_occurrences(schedule, now):
@@ -152,7 +142,7 @@ class AnnouncementService:
             raise UserError('Картинка шаблона удалена. Загрузите её повторно через /анонс шаблон.')
         return attachment.url
 
-    async def tick(self, now=None):
+    async def tick(self, now=None, *, immediate_schedule=None):
         supplied_now = now
         now = now or datetime.now(UTC)
         if not self.client.is_ready():
@@ -160,7 +150,14 @@ class AnnouncementService:
         async with self.lock:
             rows = await database_call(self.store, 'announcement_schedules', str(self.guild_id), True)
             for row in rows:
-                for start in due_occurrences(row, now):
+                occurrences = due_occurrences(row, now)
+                immediate = row['kind'] == 'once' and row['id'] == immediate_schedule
+                if immediate:
+                    start = datetime.fromisoformat(row['starts_at'])
+                    immediate = start <= now + timedelta(minutes=15)
+                    if immediate:
+                        occurrences = [start]
+                for start in occurrences:
                     try:
                         await database_call(self.store, 'ensure_channel_separation', str(self.guild_id), row['channel_id'])
                         if await database_call(self.store, 'announcement_attempt', row['id'], timestamp(start)):
@@ -169,7 +166,8 @@ class AnnouncementService:
                         text_channel(channel, self.guild_id)
                         role = channel.guild.get_role(int(row['role_id']))
                         check_role(channel, role)
-                        embed = discord.Embed(title=f'Скоро МП: {row["name"]}', description=row['body'], colour=0xE5B84B)
+                        title = 'МП' if start <= now else 'Скоро МП'
+                        embed = discord.Embed(title=f'{title}: {row["name"]}', description=row['body'], colour=0xE5B84B)
                         unix = int(start.timestamp())
                         embed.add_field(name='Начало', value=f'<t:{unix}:F> · <t:{unix}:R>')
                         image_warning = ''
@@ -182,20 +180,24 @@ class AnnouncementService:
                                 log_error('Недоступна картинка анонса; будет отправлен текст', error)
                         if image_warning:
                             embed.add_field(name='Картинка', value=image_warning.strip(), inline=False)
-                        if (datetime.now(UTC) if supplied_now is None else supplied_now) >= start:
+                        current = datetime.now(UTC) if supplied_now is None else supplied_now
+                        if current >= start and not immediate:
                             continue
                         claimed = await database_call(self.store, 'claim_announcement', row['id'], timestamp(start))
                         if not claimed:
                             continue
                         try:
-                            planned=await database_call(self.store,'create_planned_event',str(self.guild_id),'0',
-                                f'announcement:{row["id"]}:{timestamp(start)}',str(channel.id),row['name'][:80],timestamp(start),100,now=now)
-                            embed.set_footer(text=f'lafamily:planned:{planned["id"]}')
-                            embed.add_field(name='Запись на МП',value=f'Участвуйте кнопками ниже. Состав: /мп запись состав номер:{planned["id"]}. Мест: 100.',inline=False)
+                            planned = None
+                            if start > current:
+                                planned=await database_call(self.store,'create_planned_event',str(self.guild_id),'0',
+                                    f'announcement:{row["id"]}:{timestamp(start)}',str(channel.id),row['name'][:80],timestamp(start),100,now=current)
+                                embed.set_footer(text=f'lafamily:planned:{planned["id"]}')
+                                embed.add_field(name='Запись на МП',value=f'Участвуйте кнопками ниже. Состав: /мп запись состав номер:{planned["id"]}. Мест: 100.',inline=False)
                             message = await channel.send(content=f'<@&{role.id}>', embed=embed,
-                                view=SignupView(self.store),
+                                view=SignupView(self.store) if planned else None,
                                 allowed_mentions=discord.AllowedMentions(everyone=False, users=False, roles=[role], replied_user=False))
-                            await database_call(self.store,'bind_planned_message',str(self.guild_id),planned['id'],str(message.id))
+                            if planned:
+                                await database_call(self.store,'bind_planned_message',str(self.guild_id),planned['id'],str(message.id))
                             await database_call(self.store, 'finish_announcement', row['id'], timestamp(start), 'sent', str(message.id))
                         except Exception:
                             await database_call(self.store, 'finish_announcement', row['id'], timestamp(start), 'uncertain', None)
@@ -398,14 +400,22 @@ class AnnouncementCommands(app_commands.Group):
 
     @app_commands.command(name='разово', description='Назначить разовое МП по Москве', extras={'access': 'admin'})
     @app_commands.rename(template='шаблон', start='начало')
-    @app_commands.describe(start='ГГГГ-ММ-ДД ЧЧ:ММ по Москве; минимум через 15 минут')
+    @app_commands.describe(start='ЧЧ:ММ — сегодня по Москве, или ГГГГ-ММ-ДД ЧЧ:ММ. Ближайшее время — отправить сразу.')
     async def once(self, interaction: discord.Interaction, template: str, start: str):
         await self.begin(interaction)
         row = await self.template_id(interaction, template)
         begins = parse_start(start)
         async with self.service.lock:
             number = await database_call(self.service.store, 'create_announcement_schedule', str(interaction.guild_id), row['id'], 'once', begins, None, None)
-        await interaction.edit_original_response(content=f'Расписание #{number}: {row["name"]}, начало {display_date(begins)} (Москва). Анонс за 15 минут.')
+        await self.service.tick(immediate_schedule=number)
+        attempt = await database_call(self.service.store, 'announcement_attempt', number, begins)
+        if attempt:
+            status = 'Анонс опубликован.' if attempt['state'] == 'sent' else 'Отправка не подтверждена. Проверьте канал и журнал.'
+        elif datetime.fromisoformat(begins) <= datetime.now(UTC) + timedelta(minutes=15):
+            status = 'Анонс сохранён, но отправить его не удалось. Проверьте канал, роль и права бота.'
+        else:
+            status = 'Анонс будет отправлен за 15 минут до начала.'
+        await interaction.edit_original_response(content=f'Расписание #{number}: {row["name"]}, начало {display_date(begins)} (Москва). {status}')
 
     @once.autocomplete('template')
     async def once_choices(self, interaction, current):
