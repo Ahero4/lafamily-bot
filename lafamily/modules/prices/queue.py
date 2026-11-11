@@ -14,6 +14,7 @@ from .delivery_reports import send_admin_delivery_report
 
 
 BUYER_NUMBERS = re.compile(r' · (№[123](?:, №[123])*) · ')
+LEGACY_ESTIMATE = re.compile(r' \(≈\$\d+ \(расчёт\)\)')
 
 
 async def enqueue_notifications(store,message,report):
@@ -94,6 +95,8 @@ class PriceQueue:
                 if not body:
                     await database_call(self.store, 'finish_price_job', job['id'], 'failed', 'SubscriptionChanged')
                     return
+                # Убираем расчёт и из задач, сохранённых предыдущей версией.
+                body = LEGACY_ESTIMATE.sub('', body)
                 formatted_body = BUYER_NUMBERS.sub(r' · **Скупщик** **\1** · ', body)
                 sent_at = datetime.now(MOSCOW).strftime('**%H:%M** %d.%m.%Y МСК')
                 footer = (

@@ -14,17 +14,14 @@ def bonus_price_text(report, item, price):
     """Берём бонус у тех же скупщиков, что предлагают лучшую обычную цену."""
     rows = ([(buyer, prices[item]) for buyer, prices in report.buyers.items()]
             if LIMITS[item]['bonus'] is not None else [(None, report.products[item])])
-    best_rows = [(buyer, row) for buyer, row in rows if row.base == price]
+    best_rows = [(buyer, row) for buyer, row in rows
+                 if row.base == price and row.bonus is not None]
+    if not best_rows:
+        return ''
     values = {row.bonus for _, row in best_rows}
-    if len(values) == 1 and None not in values:
-        return f" (${next(iter(values))})"
-    # Отчёты продуктов и некоторые источники не содержат бонусной цены.
-    # Расчёт явно отмечаем, чтобы не выдавать его за цену из игрового отчёта.
-    def describe(row):
-        return f"${row.bonus}" if row.bonus is not None else f"≈${row.base * 120 // 100} (расчёт)"
     if len(values) == 1:
-        return f" ({describe(best_rows[0][1])})"
-    prices = ', '.join(f"№{buyer}: {describe(row)}" for buyer, row in best_rows)
+        return f" (${next(iter(values))})"
+    prices = ', '.join(f"№{buyer}: ${row.bonus}" for buyer, row in best_rows)
     return f" ({prices})"
 
 

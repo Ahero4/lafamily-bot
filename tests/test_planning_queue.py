@@ -91,11 +91,27 @@ class QueueTests(unittest.IsolatedAsyncioTestCase):
         self.member.send.assert_awaited_once()
         content=self.member.send.call_args.kwargs['content']
         self.assertIn('Медь',content);self.assertIn('Капуста',content);self.assertIn('МСК',content)
+        self.assertIn('Медь: $60 ($72)**',content)
+        self.assertIn('Капуста: $748**',content)
+        self.assertNotIn('≈',content)
         self.assertLessEqual(len(content),2000)
         summary=self.store.price_delivery_summary(G,1)
         self.assertEqual((summary['messages'],summary['sent'],summary['recipients']),(1,1,1))
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM price_delivery_attempts').fetchone()[0],2)
         self.assertEqual(self.store.price_delivery_data(G,'2000','2100')['daily'][0]['messages'],1)
+
+    async def test_previously_queued_estimates_are_removed_before_sending(self):
+        await self.enqueue()
+        self.store.db.execute(
+            "UPDATE delivery_jobs SET body=replace(body, ?, ?)",
+            ('Капуста: $748**', 'Капуста: $748 (≈$897 (расчёт))**'))
+        await self.queue.drain()
+        self.member.send.assert_awaited_once()
+        content=self.member.send.call_args.kwargs['content']
+        self.assertIn('Капуста: $748**',content)
+        self.assertIn('Медь: $60 ($72)**',content)
+        self.assertNotIn('расчёт',content)
+        self.assertNotIn('≈',content)
 
     async def test_restart_resumes_queued_but_never_repeats_sending(self):
         await self.enqueue()

@@ -1,4 +1,5 @@
 import unittest
+import re
 from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,12 @@ class NotificationBonusTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('№1: $72',text)
         self.assertIn('№2: $71',text)
 
-    def test_missing_bonus_is_explicitly_calculated(self):
+    def test_products_have_no_bonus_price(self):
         report=parse_prices(EXAMPLE)
-        self.assertEqual(bonus_price_text(report,'Капуста',720),' (≈$864 (расчёт))')
+        for item, row in report.products.items():
+            with self.subTest(item=item):
+                self.assertEqual(bonus_price_text(report,item,row.base),'')
+
+    def test_missing_material_bonus_is_not_calculated(self):
+        report=parse_prices(re.sub(r' \(\$\d+\)', '', EXAMPLE))
+        self.assertEqual(bonus_price_text(report,'Медь',36),'')
