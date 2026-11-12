@@ -1,6 +1,6 @@
 [project]
 name = "lafamily-bot"
-version = "0.6.12"
+version = "0.6.13"
 description = "Семейный Discord-бот LaFamily: учёт МП"
 requires-python = ">=3.12"
 dependencies = ["discord.py==2.7.1", "python-dotenv==1.2.4"]

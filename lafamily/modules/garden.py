@@ -65,7 +65,7 @@ class GardenService:
                         log_error('Не удалось найти получателя сада',error)
                         continue
                     if self.restoring(): return
-                    claimed=await database_call(self.store,'garden_claim',str(self.guild_id),user,kind,key,clock())
+                    claimed=await database_call(self.store,'garden_claim',str(self.guild_id),user,kind,key,clock)
                     if not claimed: continue
                     if self.restoring(): return
                     names=', '.join(f"{CROPS[r['crop']][0]} ×{r['quantity']}" for r in claimed)
@@ -136,7 +136,7 @@ class GardenReminderButton(discord.ui.DynamicItem[discord.ui.Button],
             if service.restoring():
                 raise UserError('База восстанавливается. Повторите действие после переподключения.')
             await interaction.response.defer(ephemeral=True,thinking=True)
-            count=await database_call(service.store,'garden_reminder_action',self.guild,self.owner,self.hour,self.action,service.clock())
+            count=await database_call(service.store,'garden_reminder_action',self.guild,self.owner,self.hour,self.action,service.clock)
             text=('Обработка отмечена.' if self.action=='process' else 'Удобрение отмечено.') if count else 'Уже отмечено или посадки больше не требуют этого действия.'
             await interaction.edit_original_response(content=text)
         except Exception as error:

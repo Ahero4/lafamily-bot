@@ -6,8 +6,12 @@ CROPS = {'cabbage': ('Капуста', 4), 'pumpkin': ('Тыква', 5),
          'mandarin': ('Мандарины', 6), 'pineapple': ('Ананасы', 7)}
 
 
+def resolve_now(now=None):
+    return now() if callable(now) else now if now is not None else datetime.now(UTC)
+
+
 def hour_at(now=None):
-    return int((now or datetime.now(UTC)).timestamp()) // 3600
+    return int(resolve_now(now).timestamp()) // 3600
 
 
 class GardenStore:
@@ -61,8 +65,9 @@ class GardenStore:
         remaining = {} if remaining is None else remaining
         if not isinstance(remaining, dict) or any(crop not in CROPS or not quantities.get(crop) or type(value) is not int or not 0 <= value <= CROPS[crop][1] for crop,value in remaining.items()):
             raise UserError('Остаток PayDay: целое число от 0 до срока культуры, только для посаженных растений.')
-        hour = hour_at(now)
         with self.transaction():
+            now = resolve_now(now)
+            hour = hour_at(now)
             self._garden_advance(guild,user,hour)
             if self.db.execute('SELECT 1 FROM garden_requests WHERE guild_id=? AND user_id=? AND request_id=?',(guild,user,request)).fetchone():
                 return
@@ -77,8 +82,9 @@ class GardenStore:
                                      hour if remaining.get(crop) == 0 else None))
 
     def garden_action(self, guild, user, action, batch_id=None, now=None):
-        hour = hour_at(now)
         with self.transaction():
+            now = resolve_now(now)
+            hour = hour_at(now)
             self._garden_advance(guild,user,hour)
             rows = self._garden_rows(guild,user)
             selected = [r for r in rows if batch_id is None or r['id']==batch_id]
@@ -123,13 +129,14 @@ class GardenStore:
             (guild,user,kind,key)).fetchone()]
 
     def garden_claim(self, guild, user, kind, key, now=None):
-        hour = hour_at(now)
         with self.transaction():
+            now = resolve_now(now)
+            hour = hour_at(now)
             self._garden_advance(guild,user,hour)
             rows = self._garden_rows(guild,user)
             if kind == 'process':
                 rows = [r for r in rows if any(self.garden_needs(r,hour))]
-                if str(hour)!=key or (now or datetime.now(UTC)).minute < 50:
+                if str(hour)!=key or now.minute < 50:
                     return []
             elif kind == 'ripe':
                 rows = [r for r in rows if str(r['id'])==key and r['ripe_hour'] is not None]
@@ -150,8 +157,9 @@ class GardenStore:
     def garden_reminder_action(self,guild,user,key,action,now=None):
         if action not in ('process','fertilize'):
             raise UserError('Неизвестное действие сада.')
-        hour=hour_at(now)
         with self.transaction():
+            now = resolve_now(now)
+            hour = hour_at(now)
             delivery=self.db.execute("SELECT state FROM garden_deliveries WHERE guild_id=? AND user_id=? AND kind='process' AND event_key=?",
                                      (guild,user,key)).fetchone()
             if not delivery or delivery['state'] not in ('sending','sent','uncertain'):
