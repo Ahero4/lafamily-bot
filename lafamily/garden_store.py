@@ -165,7 +165,7 @@ class GardenStore:
             if not delivery or delivery['state'] not in ('sending','sent','uncertain'):
                 raise UserError('Это напоминание больше недоступно. Откройте /сад.')
             if action == 'process' and str(hour)!=key:
-                raise UserError('Час этого напоминания уже прошёл. Откройте /сад для обработки в текущем часу.')
+                raise UserError('Час этого напоминания уже прошёл. Откройте /сад для обработки в текущем часу. Если обработали в игре, но забыли отметку, выберите «Исправить PayDay».')
             targets=list(self.db.execute('SELECT * FROM garden_reminder_targets WHERE guild_id=? AND user_id=? AND event_key=?',
                                          (guild,user,key)))
             if not targets:
@@ -184,6 +184,29 @@ class GardenStore:
                     self.db.execute('UPDATE garden_batches SET fertilized=1 WHERE id=?',(row['id'],))
                     updated+=1
             return updated
+
+    def garden_correct_remaining(self,guild,user,batch_id,remaining,expected,request,now=None):
+        if type(remaining) is not int or not 0 <= remaining <= max(c[1] for c in CROPS.values()):
+            raise UserError('Осталось PayDay: целое число от 0 до срока культуры.')
+        with self.transaction():
+            hour=hour_at(resolve_now(now))
+            self._garden_advance(guild,user,hour)
+            request='garden-correction:'+request
+            if self.db.execute('SELECT 1 FROM garden_requests WHERE guild_id=? AND user_id=? AND request_id=?',
+                               (guild,user,request)).fetchone():
+                return False
+            row=next((r for r in self._garden_rows(guild,user) if r['id']==batch_id),None)
+            if not row or row['ripe_hour'] is not None:
+                raise UserError('Исправлять можно только растущую посадку. Обновите /сад.')
+            required=CROPS[row['crop']][1]
+            if remaining > required:
+                raise UserError(f'Осталось PayDay: от 0 до {required}.')
+            if any(row[key]!=expected.get(key) for key in ('progress','checked_hour')):
+                raise UserError('Посадка изменилась. Обновите /сад и откройте исправление снова.')
+            self.db.execute('UPDATE garden_batches SET progress=?,checked_hour=?,planted_hour=?,ripe_hour=? WHERE id=?',
+                (required-remaining,hour,min(row['planted_hour'],hour-1),hour if remaining==0 else None,batch_id))
+            self.db.execute('INSERT INTO garden_requests VALUES(?,?,?)',(guild,user,request))
+            return True
 
     def garden_delivery_result(self,guild,user,kind,key,state):
         self.db.execute('UPDATE garden_deliveries SET state=? WHERE guild_id=? AND user_id=? AND kind=? AND event_key=?',

@@ -46,6 +46,7 @@ class GardenService:
         embed.set_footer(text=f"Занято {sum(r['quantity'] for r in rows)}/9 · Разрешите ЛС от бота для напоминаний и созревания.")
         embed.add_field(name='Правила',value='Первый PayDay засчитывается автоматически. Далее обрабатывайте каждый час для зачёта следующего PayDay. На :50 напомню об обработке и удобрении в ЛС. Удобрение отмечается один раз. Созревшие занимают места до сбора.',inline=False)
         embed.add_field(name='Добавление посадок', value='Выберите культуру и укажите количество. Поле «Осталось PayDay» необязательно: пустое означает обычный срок культуры. Если укажете остаток вручную, 0 означает созревшую посадку; для остальных отметьте обработку текущего часа для зачёта следующего PayDay.', inline=False)
+        embed.add_field(name='Забыли отметку в боте?',value='Если в игре обработали растения, выберите одну посадку → «Исправить PayDay» и укажите остаток по игре. Обработку текущего часа отметьте отдельно.',inline=False)
         return embed, GardenView(self,owner,rows,selected)
 
     async def tick(self, now=None):
@@ -203,6 +204,30 @@ class PlantModal(discord.ui.Modal, title='Добавить посадку'):
         await send_error(interaction,error)
 
 
+class CorrectPaydayModal(discord.ui.Modal, title='Исправить PayDay'):
+    def __init__(self,service,owner,row):
+        super().__init__()
+        self.service,self.owner,self.row=service,owner,dict(row)
+        self.remaining=discord.ui.TextInput(label='Осталось PayDay (по игре)',
+            default=str(CROPS[row['crop']][1]-row['progress']),
+            placeholder=f"От 0 до {CROPS[row['crop']][1]}",max_length=2)
+        self.add_item(self.remaining)
+
+    async def on_submit(self,interaction):
+        self.service.check(interaction,self.owner)
+        text=self.remaining.value.strip()
+        if not text.isascii() or not text.isdecimal():
+            raise UserError('Введите целое число оставшихся PayDay по игре.')
+        await interaction.response.defer(ephemeral=True,thinking=True)
+        await database_call(self.service.store,'garden_correct_remaining',str(self.service.guild_id),str(self.owner),
+                            self.row['id'],int(text),self.row,str(interaction.id),self.service.clock)
+        embed,view=await self.service.card(self.owner,self.row['id'])
+        await interaction.edit_original_response(content='Остаток PayDay сохранён. Обработку текущего часа отметьте отдельно.',embed=embed,view=view)
+
+    async def on_error(self,interaction,error):
+        await send_error(interaction,error)
+
+
 class GardenView(discord.ui.View):
     def __init__(self,service,owner,rows,selected=None):
         super().__init__(timeout=900)
@@ -249,6 +274,16 @@ class GardenView(discord.ui.View):
 
     @discord.ui.button(label='Собрать',row=2)
     async def collect(self,interaction,button): await self.action(interaction,'collect')
+
+    @discord.ui.button(label='Исправить PayDay',row=2)
+    async def correct(self,interaction,button):
+        if self.selected is None:
+            raise UserError('Сначала выберите одну посадку в списке вместо «Весь сад».')
+        rows=await database_call(self.service.store,'garden_snapshot',str(self.service.guild_id),str(self.owner),self.service.clock)
+        row=next((r for r in rows if r['id']==self.selected),None)
+        if row is None or row['ripe_hour'] is not None:
+            raise UserError('Исправлять можно только растущую посадку. Обновите /сад.')
+        await interaction.response.send_modal(CorrectPaydayModal(self.service,self.owner,row))
 
     @discord.ui.button(label='Обновить',row=2)
     async def update(self,interaction,button): await self.refresh(interaction)
