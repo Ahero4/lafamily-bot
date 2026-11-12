@@ -44,6 +44,7 @@ class GardenService:
             lines.append(f"**#{r['id']} {name} ×{r['quantity']}**\n{state}\nУдобрение: {'да' if r['fertilized'] else 'нет'}")
         embed.description='\n\n'.join(lines) or 'Сад пуст. Нажмите «Посадить» и укажите количества.'
         embed.set_footer(text=f"Занято {sum(r['quantity'] for r in rows)}/9 · Разрешите ЛС от бота для напоминаний и созревания.")
+        embed.add_field(name='Сроки роста',value='\n'.join(f'{name} — {duration} PayDay' for name,duration in CROPS.values())+'\nPayDay — начало нового часа.',inline=False)
         embed.add_field(name='Правила',value='Первый PayDay засчитывается автоматически. Далее обрабатывайте каждый час для зачёта следующего PayDay. На :50 напомню об обработке и удобрении в ЛС. Удобрение отмечается один раз. Созревшие занимают места до сбора.',inline=False)
         embed.add_field(name='Добавление посадок', value='Выберите культуру и укажите количество. Поле «Осталось PayDay» необязательно: пустое означает обычный срок культуры. Если укажете остаток вручную, 0 означает созревшую посадку; для остальных отметьте обработку текущего часа для зачёта следующего PayDay.', inline=False)
         embed.add_field(name='Забыли отметку в боте?',value='Если в игре обработали растения, выберите одну посадку → «Исправить PayDay» и укажите остаток по игре. Обработку текущего часа отметьте отдельно.',inline=False)
