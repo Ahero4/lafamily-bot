@@ -24,7 +24,7 @@ from lafamily.modules.nicknames import register_nickname_command
 from lafamily.modules.prices.service import PriceService
 from lafamily.modules.prices.commands import register_price_commands
 from lafamily.modules.barn import register_barn_commands
-from lafamily.modules.garden import GardenService, register_garden
+from lafamily.modules.garden import GardenService, GardenReminderButton, register_garden
 from lafamily.modules.onboarding import OnboardingService, EntryView, ReviewView, RecoveryView, register_onboarding
 
 logger = logging.getLogger(__name__)
@@ -85,6 +85,7 @@ class FamilyBot(discord.Client):
         register_health(self.tree,self.health,config.guild_id)
 
     async def setup_hook(self):
+        self.add_dynamic_items(GardenReminderButton)
         # Постоянные кнопки продолжают работать после перезапуска.
         self.add_view(EntryView(self.onboarding))
         self.add_view(ReviewView(self.onboarding))

@@ -21,6 +21,9 @@ class GardenStore:
           UNIQUE(guild_id,user_id,request_id,crop));
         CREATE TABLE IF NOT EXISTS garden_requests(guild_id TEXT,user_id TEXT,request_id TEXT,
           PRIMARY KEY(guild_id,user_id,request_id));
+        CREATE TABLE IF NOT EXISTS garden_reminder_targets(guild_id TEXT NOT NULL,user_id TEXT NOT NULL,
+          event_key TEXT NOT NULL,batch_id INTEGER NOT NULL,needs_process INTEGER NOT NULL,
+          needs_fertilize INTEGER NOT NULL,PRIMARY KEY(guild_id,user_id,event_key,batch_id));
         CREATE TABLE IF NOT EXISTS garden_deliveries(guild_id TEXT,user_id TEXT,kind TEXT,event_key TEXT,
           state TEXT NOT NULL, PRIMARY KEY(guild_id,user_id,kind,event_key));
         ''')
@@ -52,9 +55,12 @@ class GardenStore:
             self._garden_advance(guild,user,hour_at(now))
             return self._garden_rows(guild,user)
 
-    def garden_plant(self, guild, user, request, quantities, now=None):
+    def garden_plant(self, guild, user, request, quantities, now=None, *, remaining=None):
         if set(quantities) - set(CROPS) or any(type(v) is not int or v < 0 or v > 9 for v in quantities.values()) or not 1 <= sum(quantities.values()) <= 9:
             raise UserError('Укажите целые количества растений: суммарно от 1 до 9.')
+        remaining = {} if remaining is None else remaining
+        if not isinstance(remaining, dict) or any(crop not in CROPS or not quantities.get(crop) or type(value) is not int or not 0 <= value <= CROPS[crop][1] for crop,value in remaining.items()):
+            raise UserError('Остаток PayDay: целое число от 0 до срока культуры, только для посаженных растений.')
         hour = hour_at(now)
         with self.transaction():
             self._garden_advance(guild,user,hour)
@@ -65,8 +71,10 @@ class GardenStore:
             self.db.execute('INSERT INTO garden_requests VALUES(?,?,?)',(guild,user,request))
             for crop, quantity in quantities.items():
                 if quantity:
-                    self.db.execute('INSERT INTO garden_batches(guild_id,user_id,request_id,crop,quantity,planted_hour,checked_hour) VALUES(?,?,?,?,?,?,?)',
-                                    (guild,user,request,crop,quantity,hour,hour))
+                    self.db.execute('INSERT INTO garden_batches(guild_id,user_id,request_id,crop,quantity,planted_hour,checked_hour,progress,ripe_hour) VALUES(?,?,?,?,?,?,?,?,?)',
+                                    (guild,user,request,crop,quantity,hour-1 if crop in remaining else hour,hour,
+                                     CROPS[crop][1]-remaining[crop] if crop in remaining else 0,
+                                     hour if remaining.get(crop) == 0 else None))
 
     def garden_action(self, guild, user, action, batch_id=None, now=None):
         hour = hour_at(now)
@@ -97,12 +105,18 @@ class GardenStore:
     def garden_owners(self, guild):
         return [r[0] for r in self.db.execute('SELECT DISTINCT user_id FROM garden_batches WHERE guild_id=? AND collected=0',(guild,))]
 
+    @staticmethod
+    def garden_needs(row, hour):
+        growing = row['ripe_hour'] is None
+        return (growing and row['planted_hour'] < hour and row['processed_hour'] != hour,
+                growing and not row['fertilized'])
+
     def garden_pending(self, guild, user, now=None):
         now = now or datetime.now(UTC)
         rows = self.garden_snapshot(guild,user,now)
         events = [('ripe',str(r['id'])) for r in rows if r['ripe_hour'] is not None]
         hour = hour_at(now)
-        if now.minute >= 50 and any(r['ripe_hour'] is None and r['planted_hour'] < hour and r['processed_hour'] != hour for r in rows):
+        if now.minute >= 50 and any(any(self.garden_needs(r,hour)) for r in rows):
             events.append(('process',str(hour)))
         return [(kind,key) for kind,key in events if not self.db.execute(
             'SELECT 1 FROM garden_deliveries WHERE guild_id=? AND user_id=? AND kind=? AND event_key=?',
@@ -114,15 +128,54 @@ class GardenStore:
             self._garden_advance(guild,user,hour)
             rows = self._garden_rows(guild,user)
             if kind == 'process':
-                rows = [r for r in rows if r['ripe_hour'] is None and r['planted_hour'] < hour and r['processed_hour'] != hour]
+                rows = [r for r in rows if any(self.garden_needs(r,hour))]
                 if str(hour)!=key or (now or datetime.now(UTC)).minute < 50:
                     return []
-            else:
+            elif kind == 'ripe':
                 rows = [r for r in rows if str(r['id'])==key and r['ripe_hour'] is not None]
+            else:
+                raise UserError('Неизвестный тип уведомления сада.')
             if not rows:
                 return []
             result=self.db.execute('INSERT OR IGNORE INTO garden_deliveries VALUES(?,?,?,?,?)',(guild,user,kind,key,'sending'))
-            return rows if result.rowcount else []
+            if not result.rowcount:
+                return []
+            if kind == 'process':
+                for row in rows:
+                    process,fertilize=self.garden_needs(row,hour)
+                    self.db.execute('INSERT INTO garden_reminder_targets VALUES(?,?,?,?,?,?)',
+                        (guild,user,key,row['id'],int(process),int(fertilize)))
+            return rows
+
+    def garden_reminder_action(self,guild,user,key,action,now=None):
+        if action not in ('process','fertilize'):
+            raise UserError('Неизвестное действие сада.')
+        hour=hour_at(now)
+        with self.transaction():
+            delivery=self.db.execute("SELECT state FROM garden_deliveries WHERE guild_id=? AND user_id=? AND kind='process' AND event_key=?",
+                                     (guild,user,key)).fetchone()
+            if not delivery or delivery['state'] not in ('sending','sent','uncertain'):
+                raise UserError('Это напоминание больше недоступно. Откройте /сад.')
+            if action == 'process' and str(hour)!=key:
+                raise UserError('Час этого напоминания уже прошёл. Откройте /сад для обработки в текущем часу.')
+            targets=list(self.db.execute('SELECT * FROM garden_reminder_targets WHERE guild_id=? AND user_id=? AND event_key=?',
+                                         (guild,user,key)))
+            if not targets:
+                raise UserError('Посадки этого напоминания не найдены. Откройте /сад.')
+            self._garden_advance(guild,user,hour)
+            flags={r['batch_id']:r for r in targets}
+            updated=0
+            for row in self._garden_rows(guild,user):
+                target=flags.get(row['id'])
+                if not target or row['ripe_hour'] is not None:
+                    continue
+                if action == 'process' and target['needs_process'] and row['processed_hour'] != hour:
+                    self.db.execute('UPDATE garden_batches SET processed_hour=? WHERE id=?',(hour,row['id']))
+                    updated+=1
+                elif action == 'fertilize' and target['needs_fertilize'] and not row['fertilized']:
+                    self.db.execute('UPDATE garden_batches SET fertilized=1 WHERE id=?',(row['id'],))
+                    updated+=1
+            return updated
 
     def garden_delivery_result(self,guild,user,kind,key,state):
         self.db.execute('UPDATE garden_deliveries SET state=? WHERE guild_id=? AND user_id=? AND kind=? AND event_key=?',
