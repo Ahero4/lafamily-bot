@@ -192,3 +192,46 @@ class OnboardingTests(unittest.IsolatedAsyncioTestCase):
         response = SimpleNamespace(status=403, reason='Forbidden')
         member = SimpleNamespace(send=AsyncMock(side_effect=discord.Forbidden(response, 'DM closed')))
         self.assertFalse(await OnboardingService.notify(member, 'Отклонено'))
+
+
+    async def test_new_request_rechecks_review_channel_after_fetch(self):
+        for move_to_prices in (False, True):
+            with self.subTest(move_to_prices=move_to_prices):
+                store = Store(':memory:')
+                self.addCleanup(store.close)
+                store.configure_onboarding('1', '20', '30', '4')
+                service = OnboardingService(store)
+                message_id = 555555555555555555
+                interaction_id = 111111111111111111
+                channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=message_id)))
+
+                async def fetch_channel(channel_id):
+                    self.assertEqual(channel_id, 30)
+                    if move_to_prices:
+                        # Simulate another administrator while Discord resolves the channel.
+                        store.configure_onboarding('1', '21', '31', '4')
+                        store.configure_prices('1', '7', '30')
+                    return channel
+
+                interaction = SimpleNamespace(id=interaction_id, guild_id=1, channel_id=20,
+                    user=SimpleNamespace(id=222222222222222222),
+                    guild=SimpleNamespace(fetch_channel=AsyncMock(side_effect=fetch_channel)),
+                    response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock())
+                modal = IdentityModal(service)
+                self.addCleanup(modal.stop)
+                modal.name._value, modal.static._value = 'Sin Bertoni', '15096'
+                if move_to_prices:
+                    with self.assertRaises(UserError):
+                        await modal.on_submit(interaction)
+                    channel.send.assert_not_awaited()
+                    self.assertIsNone(store.onboarding_request(f'pending:{interaction_id}'))
+                    self.assertIsNone(store.onboarding_request(str(message_id)))
+                    self.assertEqual(store.price_settings('1')['channel_id'], '30')
+                else:
+                    await modal.on_submit(interaction)
+                    channel.send.assert_awaited_once()
+                    self.assertIsNone(store.onboarding_request(f'pending:{interaction_id}'))
+                    row = store.onboarding_request(str(message_id))
+                    self.assertEqual(row['review_channel_id'], '30')
+                    self.assertEqual(row['user_id'], str(interaction.user.id))
+                    self.assertEqual(row['approved'], 0)

@@ -6,3 +6,10 @@ __pycache__/
 data/
 backups/
 *.log
+
+# Local agent instructions and workflow (never publish)
+AGENTS.md
+AGENTS.override.md
+.codex/
+.agents/
+.agent-setup/

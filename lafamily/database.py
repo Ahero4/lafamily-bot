@@ -17,9 +17,10 @@ from lafamily.jobs_store import JobsStore
 from lafamily.backup_store import BackupStore
 from lafamily.channel_store import ChannelStore
 from lafamily.onboarding_store import OnboardingStore
+from lafamily.garden_store import GardenStore
 
 
-class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, JobsStore, BackupStore, ChannelStore, OnboardingStore):
+class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, JobsStore, BackupStore, ChannelStore, OnboardingStore, GardenStore):
     def __init__(self, path: str | Path):
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +129,7 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
         self.init_insights()
         self.init_planning()
         self.init_jobs()
+        self.init_garden()
         if 'name' not in {row['name'] for row in self.db.execute('PRAGMA table_info(recurring_notices)')}:
             self.db.execute('ALTER TABLE recurring_notices ADD COLUMN name TEXT')
         # Старые подписки сохраняют прежний режим и защиту от повторных тегов.
@@ -260,6 +262,9 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
             existing = self.db.execute("SELECT id FROM reports WHERE request_id=? AND guild_id=?", (draft.request_id, draft.guild_id)).fetchone()
             if existing:
                 return self.report(draft.guild_id, existing["id"])
+            # Настройки могли измениться во время сетевой проверки состава.
+            # Повторная проверка и запись выполняются в одной транзакции.
+            self.ensure_channel_separation(draft.guild_id, draft.channel_id)
             if draft.enforce_duplicates:
                 key, matches = self.duplicate_report_key(draft)
                 if matches and draft.duplicate_ack != key:
@@ -537,6 +542,13 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
         self.db.execute("""INSERT INTO release_deliveries VALUES (?,?,?,'published',?)
             ON CONFLICT(guild_id,channel_id,version) DO UPDATE SET state='published', message_id=excluded.message_id""",
             (guild_id, channel_id, version, message_id))
+
+    def release_failed_release_delivery(self, guild_id, channel_id, version):
+        """Освободить только неотправленную публикацию после явного отказа Discord."""
+        result = self.db.execute("DELETE FROM release_deliveries WHERE guild_id=? AND channel_id=? "
+                                 "AND version=? AND state='pending' AND message_id IS NULL",
+                                 (guild_id, channel_id, version))
+        return bool(result.rowcount)
 
     def uncertain_release_delivery(self, guild_id, channel_id, version):
         self.db.execute("UPDATE release_deliveries SET state='uncertain' WHERE guild_id=? AND channel_id=? AND version=?",

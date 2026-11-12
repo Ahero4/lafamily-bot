@@ -32,9 +32,12 @@ class OnboardingStore:
         return dict(row) if row else None
 
     def save_onboarding_request(self, message_id, guild_id, user_id, role_id, name='', static='', review_channel_id=None):
-        self.db.execute('''INSERT INTO onboarding_requests
-            (message_id,guild_id,user_id,role_id,name,static,review_channel_id) VALUES (?,?,?,?,?,?,?)''',
-            (message_id,guild_id,user_id,role_id,name,static,review_channel_id))
+        with self.transaction():
+            # Channel settings may change while Discord resolves the review channel.
+            self.ensure_channel_separation(guild_id, review_channel_id)
+            self.db.execute('''INSERT INTO onboarding_requests
+                (message_id,guild_id,user_id,role_id,name,static,review_channel_id) VALUES (?,?,?,?,?,?,?)''',
+                (message_id,guild_id,user_id,role_id,name,static,review_channel_id))
 
     def attach_onboarding_message(self, pending_id, message_id, guild_id, channel_id):
         with self.transaction():

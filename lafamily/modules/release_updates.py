@@ -56,16 +56,29 @@ class ReleaseUpdates:
             if not await database_call(self.store, 'claim_release_delivery', guild_id, channel_id, version):
                 result['blocked'].append(version)
                 continue
+            send_rejected = False
             try:
                 embed = discord.Embed(title=TITLE_PREFIX + version, description=notes[:4000], colour=0x43B581)
                 files = []
                 if len(notes) > 4000:
                     files = [discord.File(BytesIO(notes.encode('utf-8')), filename=f'update-{version}.md')]
-                message = await channel.send(embed=embed, files=files,
-                                             allowed_mentions=discord.AllowedMentions.none())
+                try:
+                    message = await channel.send(embed=embed, files=files,
+                                                 allowed_mentions=discord.AllowedMentions.none())
+                except discord.HTTPException as error:
+                    # Только подтверждённый отказ именно отправки безопасен для повтора.
+                    # Сбой сохранения после успешного send сюда не попадает.
+                    send_rejected = error.status in {400, 401, 403, 404}
+                    raise
                 await database_call(self.store, 'save_release_delivery', guild_id, channel_id, version, str(message.id))
                 result['published'].append(version)
             except Exception as error:
+                if send_rejected:
+                    await database_call(self.store, 'release_failed_release_delivery', guild_id, channel_id, version)
+                    log_error(f'Discord отклонил отправку выпуска {version}; повтор разрешён после исправления причины', error)
+                    raise UserError(f'Успешно отправлено выпусков: {len(result["published"])}. '
+                                    f'Discord отклонил отправку {version}. Проверьте канал, права и параметры, '
+                                    'затем повторите команду после устранения причины.') from error
                 await database_call(self.store, 'uncertain_release_delivery', guild_id, channel_id, version)
                 log_error(f'Не подтверждена отправка выпуска {version}; автоматический повтор заблокирован', error)
                 raise UserError(f'Успешно отправлено выпусков: {len(result["published"])}. '

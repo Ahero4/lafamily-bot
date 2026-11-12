@@ -94,6 +94,21 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(store.db.execute('SELECT COUNT(*) FROM reports').fetchone()[0],0)
 
 
+    def test_existing_report_retry_keeps_snapshot_after_type_is_disabled(self):
+        store = Store(':memory:')
+        self.addCleanup(store.close)
+        store.configure(G,A,C,'org','manager')
+        kind = store.set_type(G,A,'Test',10)
+        draft = Draft(G,A,C,kind['id'],'Test',10,timestamp(),members=[U])
+        original = store.create_report(draft)
+        store.disable_type(G,A,kind['id'])
+        self.assertEqual(store.create_report(draft),original)
+        self.assertEqual(store.db.execute('SELECT COUNT(*) FROM reports').fetchone()[0],1)
+        self.assertEqual(store.db.execute('SELECT COUNT(*) FROM report_members').fetchone()[0],1)
+        self.assertEqual(store.db.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='report.created'").fetchone()[0],1)
+
+
 class AuditAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.store = Store(':memory:')
@@ -104,6 +119,42 @@ class AuditAsyncTests(unittest.IsolatedAsyncioTestCase):
             outcomes = await asyncio.gather(worker.call('configure_prices',G,A,C),
                 worker.call('configure_announcement_storage',G,C), return_exceptions=True)
             self.assertEqual(sum(isinstance(r,UserError) for r in outcomes),1)
+
+    async def test_report_rechecks_price_channel_after_member_fetch_before_credit(self):
+        self.store.configure(G,A,C,'org','manager')
+        kind = self.store.set_type(G,A,'Test',10)
+        service = EventService(self.store)
+        self.addCleanup(service.close)
+        draft = Draft(G,A,C,kind['id'],'Test',10,timestamp(),members=[U])
+        view = service.new_view(draft)
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = int(C)
+        channel.permissions_for.return_value = SimpleNamespace(
+            view_channel=True,send_messages=True,embed_links=True)
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=int(M)))
+        interaction = admin()
+        interaction.guild.fetch_channel = AsyncMock(return_value=channel)
+
+        async def change_channels_while_fetching_member(member_id):
+            # Канал проверен, но запрос к Discord ещё не завершился.
+            self.store.configure(G,A,V,'org','manager')
+            self.store.configure_prices(G,A,C)
+            return SimpleNamespace(id=member_id,bot=False)
+
+        interaction.guild.fetch_member = AsyncMock(side_effect=change_channels_while_fetching_member)
+        with self.assertRaises(UserError):
+            await service.confirm(interaction,view)
+        interaction.guild.fetch_channel.assert_awaited_once_with(int(C))
+        interaction.guild.fetch_member.assert_awaited_once_with(int(U))
+        self.assertEqual(self.store.price_settings(G)['channel_id'],C)
+        channel.send.assert_not_awaited()
+        self.assertFalse(view.finished)
+        self.assertFalse(self.store.db.in_transaction)
+        for table in ('reports','report_members'):
+            self.assertEqual(self.store.db.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0],0)
+        self.assertEqual(self.store.statistics(G,week_range()),[])
+        self.assertEqual(self.store.db.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE action='report.created'").fetchone()[0],0)
 
     async def test_cleanup_skips_existing_conflict_without_reading_or_deleting_history(self):
         self.store.configure_prices(G,A,C)

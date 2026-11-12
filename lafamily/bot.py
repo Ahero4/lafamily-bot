@@ -24,6 +24,7 @@ from lafamily.modules.nicknames import register_nickname_command
 from lafamily.modules.prices.service import PriceService
 from lafamily.modules.prices.commands import register_price_commands
 from lafamily.modules.barn import register_barn_commands
+from lafamily.modules.garden import GardenService, register_garden
 from lafamily.modules.onboarding import OnboardingService, EntryView, ReviewView, RecoveryView, register_onboarding
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,8 @@ class FamilyBot(discord.Client):
         install_commands(self.tree, self.events, config.guild_id)
         self.tree.add_command(AnnouncementCommands(self.announcements), guild=discord.Object(id=config.guild_id))
         register_barn_commands(self.tree, store, config.guild_id)
+        self.garden = GardenService(self, store, config.guild_id)
+        register_garden(self.tree, self.garden, config.guild_id)
         self.onboarding = OnboardingService(store)
         register_onboarding(self.tree, self.onboarding, config.guild_id)
         register_nickname_command(self.tree, store, config.guild_id)
@@ -126,6 +129,7 @@ class FamilyBot(discord.Client):
         self.announcements.start()
         self.prices.queue.start()
         self.health.start()
+        self.garden.start()
         await self.reaction_roles.upgrade_card()
         await self.release_updates.announce()
 
@@ -136,6 +140,7 @@ class FamilyBot(discord.Client):
             log_error(f"Необработанная ошибка события {event_method}", error)
 
     async def close(self):
+        await self.garden.close()
         await self.health.close()
         await self.prices.queue.close()
         await self.backups.close()

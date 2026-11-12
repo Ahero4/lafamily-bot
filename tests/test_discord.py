@@ -150,7 +150,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
         try:
             commands = bot.tree.get_commands(guild=discord.Object(id=int(GUILD)))
             data = {command.name: command.to_dict(bot.tree) for command in commands}
-            self.assertEqual(set(data), {"мп", "баллы", "бот", "помощь", "команды", "инфо", "ники", "скупщик", "коровник", "старт", "заявки", "анонс", "участник", "роль"})
+            self.assertEqual(set(data), {"мп", "баллы", "бот", "помощь", "команды", "инфо", "ники", "скупщик", "коровник", "старт", "заявки", "анонс", "участник", "роль", "сад"})
             role_setup, = data["роль"]["options"]
             self.assertEqual(role_setup["name"], "выдача")
             self.assertEqual([item["name"] for item in role_setup["options"]],

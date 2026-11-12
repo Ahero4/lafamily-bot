@@ -99,6 +99,66 @@ class ReleaseTests(unittest.IsolatedAsyncioTestCase):
         await self.service.announce()
         self.assertEqual(self.channel.send.await_count, 3)
 
+    async def test_confirmed_http_rejection_allows_retry_after_fix(self):
+        with patch.dict(self.releases, {'2.2.1': 'First'}, clear=True):
+            for status in (400, 401, 403, 404):
+                with self.subTest(status=status):
+                    self.channel.id = 1000 + status
+                    self.channel.send.reset_mock()
+                    self.channel.send.side_effect = discord.HTTPException(
+                        SimpleNamespace(status=status, reason='Rejected'), 'Rejected')
+                    with self.assertLogs('lafamily.errors', level='ERROR'):
+                        with self.assertRaises(UserError) as caught:
+                            await self.service._publish(self.channel, {})
+                    self.assertIn('повтор', str(caught.exception).lower())
+                    row = self.store.db.execute('SELECT state FROM release_deliveries WHERE channel_id=?',
+                                                (str(self.channel.id),)).fetchone()
+                    self.assertIsNone(row, 'Confirmed rejection must release only its pending claim')
+                    self.channel.send.side_effect = self.send
+                    result = await self.service._publish(self.channel, {})
+                    self.assertEqual(result['published'], ['2.2.1'])
+                    self.assertEqual(result['blocked'], [])
+                    self.assertEqual(self.channel.send.await_count, 2)
+
+    async def test_timeout_and_ambiguous_http_failure_remain_blocked(self):
+        errors = [TimeoutError('response lost')] + [discord.HTTPException(
+            SimpleNamespace(status=status, reason='Unknown'), 'Unknown') for status in (408, 429, 500)]
+        with patch.dict(self.releases, {'2.2.1': 'First'}, clear=True):
+            for index, error in enumerate(errors):
+                with self.subTest(error=repr(error)):
+                    self.channel.id = 2000 + index
+                    self.channel.send.reset_mock()
+                    self.channel.send.side_effect = error
+                    with self.assertLogs('lafamily.errors', level='ERROR'):
+                        with self.assertRaises(UserError):
+                            await self.service._publish(self.channel, {})
+                    row = self.store.db.execute('SELECT state FROM release_deliveries WHERE channel_id=?',
+                                                (str(self.channel.id),)).fetchone()
+                    self.assertEqual(row['state'], 'uncertain')
+                    self.channel.send.side_effect = self.send
+                    result = await self.service._publish(self.channel, {})
+                    self.assertEqual(result['blocked'], ['2.2.1'])
+                    self.assertEqual(self.channel.send.await_count, 1)
+
+    async def test_post_send_save_failure_never_releases_claim(self):
+        errors = [OSError('disk full'), discord.Forbidden(
+            SimpleNamespace(status=403, reason='Forbidden'), 'Not a send rejection')]
+        with patch.dict(self.releases, {'2.2.1': 'First'}, clear=True):
+            for index, error in enumerate(errors):
+                with self.subTest(error=repr(error)):
+                    self.channel.id = 3000 + index
+                    self.channel.send.reset_mock()
+                    with patch.object(self.store, 'save_release_delivery', side_effect=error):
+                        with self.assertLogs('lafamily.errors', level='ERROR'):
+                            with self.assertRaises(UserError):
+                                await self.service._publish(self.channel, {})
+                    row = self.store.db.execute('SELECT state FROM release_deliveries WHERE channel_id=?',
+                                                (str(self.channel.id),)).fetchone()
+                    self.assertEqual(row['state'], 'uncertain')
+                    result = await self.service._publish(self.channel, {})
+                    self.assertEqual(result['blocked'], ['2.2.1'])
+                    self.assertEqual(self.channel.send.await_count, 1)
+
     async def test_history_failure_and_permissions_do_not_send(self):
         self.store.configure_release_channel(str(G), '1', '123')
         self.channel.permissions_for.return_value.read_message_history = False
@@ -141,6 +201,24 @@ class ReleaseTests(unittest.IsolatedAsyncioTestCase):
         history = (Path(__file__).resolve().parent.parent/'CHANGELOG.md').read_text(encoding='utf-8')
         self.assertIn(f'## {VERSION}', history)
         self.assertTrue(RELEASE_NOTES.startswith(LATEST_UPDATE))
+
+    def test_release_failed_delivery_preserves_other_keys_and_ambiguous_states(self):
+        target = ('1', '2', '1.0.0')
+        other_keys = [('9', '2', '1.0.0'), ('1', '9', '1.0.0'), ('1', '2', '9.0.0')]
+        protected = [('1', '2', 'uncertain'), ('1', '2', 'published'), ('1', '2', 'pending-with-message')]
+        for key in [target, *other_keys, *protected]:
+            self.store.claim_release_delivery(*key)
+        self.store.uncertain_release_delivery(*protected[0])
+        self.store.save_release_delivery(*protected[1], '77')
+        self.store.db.execute("UPDATE release_deliveries SET message_id='88' WHERE version='pending-with-message'")
+        before = {tuple(row) for row in self.store.db.execute('SELECT * FROM release_deliveries')}
+        self.assertTrue(self.store.release_failed_release_delivery(*target))
+        for key in protected:
+            self.assertFalse(self.store.release_failed_release_delivery(*key))
+        after = {tuple(row) for row in self.store.db.execute('SELECT * FROM release_deliveries')}
+        self.assertEqual(after, before - {(*target, 'pending', None)})
+        self.assertFalse(self.store.release_failed_release_delivery(*target))
+        self.assertTrue(self.store.claim_release_delivery(*target))
 
     def test_delivery_claims_persist_and_old_table_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
