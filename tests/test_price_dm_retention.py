@@ -89,8 +89,10 @@ class PriceDmRetentionTests(unittest.IsolatedAsyncioTestCase):
         other = SimpleNamespace(send=AsyncMock())
         self.guild.fetch_member.side_effect = {123: self.member, 456: other}.__getitem__
         first = (EXAMPLE.replace('- Керосин: $123 ($147)', '- Керосин: $196 ($235)')
-                 .replace('- Хорошее мясо: $987 ($1184)', '- Хорошее мясо: $900 ($1080)'))
-        second = first.replace('- Хорошее мясо: $900 ($1080)', '- Хорошее мясо: $990 ($1188)')
+                 .replace('- Хорошее мясо: $719 ($862)', '- Хорошее мясо: $400 ($480)')
+                 .replace('- Хорошее мясо: $728 ($873)', '- Хорошее мясо: $450 ($540)')
+                 .replace('- Хорошее мясо: $987 ($1184)', '- Хорошее мясо: $500 ($600)'))
+        second = first.replace('- Хорошее мясо: $500 ($600)', '- Хорошее мясо: $545 ($654)')
 
         await self.post(100, first)
         self.assertIn('Керосин: $196', self.messages[0].content)
@@ -99,7 +101,7 @@ class PriceDmRetentionTests(unittest.IsolatedAsyncioTestCase):
         await self.post(101, second)
         self.assertEqual(self.member.send.await_count, 2)
         content = self.messages[1].content
-        self.assertIn('Хорошее мясо: $990', content)
+        self.assertIn('Хорошее мясо: $545', content)
         self.assertIn('Керосин: $196', content)
         self.assertNotIn('Бензин', content)
         self.assertNotIn('Солярка', content)

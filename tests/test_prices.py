@@ -59,7 +59,7 @@ class ParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Медь: **$36** (**$43**) ✅', first.content)
         self.assertIn('Рубин: **$675** (**$810**) ✅ 🏆', second.content)
         self.assertIn('Солярка: **$198** (**$237**) ✅ 🏆', first.content)
-        self.assertIn('Идеальное мясо: **$1411** (**$1693**) ✅ ⚠️', third.content)
+        self.assertIn('Идеальное мясо: **$1411** (**$1693**) ✅\n', third.content)
         self.assertIn('Капуста: $720 🏆', products.content)
         self.assertIn('Тыква: $653\n', products.content)
         self.assertNotIn('```', ''.join(item.content for item in view.walk_children() if isinstance(item, discord.ui.TextDisplay)))
