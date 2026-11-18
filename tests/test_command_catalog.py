@@ -2,7 +2,7 @@
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import discord
 from discord import app_commands
@@ -68,6 +68,25 @@ class CommandCatalogTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(self.bot.tree.get_command(old,guild=discord.Object(id=GUILD)))
         roots=self.bot.tree.get_commands(guild=discord.Object(id=GUILD))
         self.assertTrue(all(c.to_dict(self.bot.tree) for c in roots))
+
+    async def test_bulk_reaction_accepts_a_pasted_emoji(self):
+        command = self.find('реакции массово')
+        option = next(o for o in command.to_dict(self.bot.tree)['options'] if o['name'] == 'реакция')
+        self.assertEqual(option['type'], discord.AppCommandOptionType.string.value)
+        self.assertFalse(option.get('autocomplete'))
+        self.assertFalse(option.get('choices'))
+        request = self.interaction()
+        request.guild.id = GUILD
+        request.id = 123
+        request.permissions = discord.Permissions(administrator=True)
+        request.response.send_message = AsyncMock()
+        request.is_expired = lambda: False
+        player = SimpleNamespace(id=456, guild=request.guild)
+        with patch('lafamily.modules.bulk_reactions.apply_reactions', new_callable=AsyncMock) as apply:
+            await command.callback(request, player, '🐰')
+        apply.assert_awaited_once()
+        guild, player_id, emoji, _, _ = apply.await_args.args
+        self.assertEqual((guild, player_id, str(emoji)), (request.guild, player.id, '🐰'))
 
     async def test_catalog_is_complete_grouped_and_has_only_names(self):
         pages=build_command_list(self.bot.tree,GUILD)

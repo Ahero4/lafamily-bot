@@ -10,7 +10,6 @@ from lafamily.modules.reaction_roles import emoji_key
 from lafamily.permissions import check_access
 
 logger = logging.getLogger(__name__)
-COMMON_EMOJI = ('👍', '👎', '❤️', '🔥', '🎉', '😂', '✅', '👀')
 
 
 @dataclass
@@ -121,7 +120,7 @@ def register_bulk_reactions(tree, guild_id):
 
     @group.command(name='массово', description='Поставить реакцию на сообщения участника',
                    extras={'access': 'admin', 'hidden': True})
-    @app_commands.describe(игрок='Участник сервера', реакция='Выберите эмодзи или вставьте свой')
+    @app_commands.describe(игрок='Участник сервера', реакция='Вставьте один эмодзи, например 🐰')
     async def bulk(interaction: discord.Interaction, игрок: discord.Member, реакция: app_commands.Range[str, 1, 100]):
         nonlocal running
         check_access(interaction, None, 'admin')
@@ -129,7 +128,7 @@ def register_bulk_reactions(tree, guild_id):
             raise UserError('Выберите участника сервера семьи.')
         emoji = discord.PartialEmoji.from_str(реакция.strip())
         if emoji.id is None and (not emoji.name or emoji.name.isascii() or any(c.isspace() for c in emoji.name)):
-            raise UserError('Выберите или вставьте один эмодзи.')
+            raise UserError('Вставьте один эмодзи.')
         if running:
             raise UserError('Обработка уже идёт. Дождитесь завершения.')
         running = True
@@ -146,15 +145,3 @@ def register_bulk_reactions(tree, guild_id):
             await finish(interaction, text)
         finally:
             running = False
-
-    @bulk.autocomplete('реакция')
-    async def emoji_choices(interaction: discord.Interaction, current: str):
-        if interaction.guild_id != guild_id or not interaction.permissions.administrator:
-            return []
-        choices = [app_commands.Choice(name=e, value=e) for e in COMMON_EMOJI if current in e]
-        for emoji in interaction.guild.emojis:
-            if emoji.is_usable() and current.casefold().strip(':') in emoji.name.casefold():
-                choices.append(app_commands.Choice(name=f':{emoji.name}:', value=str(emoji)))
-                if len(choices) == 25:
-                    break
-        return choices
