@@ -1,5 +1,6 @@
 """Подключение Discord отделено от функциональных модулей семьи."""
 
+import asyncio
 import logging
 import sys
 
@@ -14,6 +15,7 @@ from lafamily.modules.health import HealthService,register_health
 from lafamily.modules.announcements import AnnouncementService, AnnouncementCommands
 from lafamily.modules.release_updates import ReleaseUpdates, register_release_updates
 from lafamily.modules.bulk_reactions import register_bulk_reactions
+from lafamily.modules.reaction_subscriptions import react_to_new_message
 from lafamily.modules.reaction_roles import ReactionRoles, register_reaction_roles
 from lafamily.errors import UserError
 from lafamily.database import Store
@@ -82,7 +84,7 @@ class FamilyBot(discord.Client):
         register_planning(self.tree,self,store,config.guild_id)
         self.reaction_roles = ReactionRoles(self, store, config.guild_id)
         register_reaction_roles(self.tree, self.reaction_roles)
-        register_bulk_reactions(self.tree, config.guild_id)
+        register_bulk_reactions(self.tree, config.guild_id, store)
         self.health=HealthService(self,store,config.guild_id)
         register_health(self.tree,self.health,config.guild_id)
 
@@ -104,7 +106,8 @@ class FamilyBot(discord.Client):
 
     async def on_message(self, message):
         if not self.backups.restoring:
-            await self.prices.handle(message)
+            await asyncio.gather(self.prices.handle(message),
+                                 react_to_new_message(message, self.store, self.config.guild_id))
 
     async def on_raw_message_edit(self, payload):
         if not self.backups.restoring:

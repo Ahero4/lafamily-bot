@@ -60,6 +60,9 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
                 channel_id TEXT NOT NULL, role_id TEXT NOT NULL, clock TEXT NOT NULL, days TEXT NOT NULL,
                 body TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 1,
                 last_day TEXT, name TEXT);
+            CREATE TABLE IF NOT EXISTS reaction_subscriptions(
+                guild_id TEXT NOT NULL, player_id TEXT NOT NULL, emoji TEXT NOT NULL,
+                PRIMARY KEY(guild_id,player_id));
             CREATE TABLE IF NOT EXISTS reaction_role_settings(
                 guild_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, message_id TEXT NOT NULL,
                 role_id TEXT NOT NULL, grant_emoji TEXT NOT NULL, revoke_emoji TEXT NOT NULL);
@@ -647,6 +650,32 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
             AND revision=? AND enabled=1 AND (last_day IS NULL OR last_day<?)''',
             (day, guild_id, number, revision, day))
         return bool(result.rowcount)
+
+    def reaction_subscription(self, guild_id, player_id):
+        row = self.db.execute('SELECT emoji FROM reaction_subscriptions WHERE guild_id=? AND player_id=?',
+                              (guild_id, player_id)).fetchone()
+        return row['emoji'] if row else None
+
+    def list_reaction_subscriptions(self, guild_id, page, page_size):
+        count = self.db.execute('SELECT COUNT(*) FROM reaction_subscriptions WHERE guild_id=?', (guild_id,)).fetchone()[0]
+        rows = self.db.execute('''SELECT player_id, emoji FROM reaction_subscriptions WHERE guild_id=?
+                                ORDER BY player_id LIMIT ? OFFSET ?''', (guild_id, page_size, (page - 1) * page_size))
+        return [tuple(row) for row in rows], max(1, (count + page_size - 1) // page_size)
+
+    def save_reaction_subscription(self, guild_id, player_id, emoji, *, existing_only=False):
+        if existing_only:
+            updated = self.db.execute('UPDATE reaction_subscriptions SET emoji=? WHERE guild_id=? AND player_id=?',
+                                      (emoji, guild_id, player_id))
+            if updated.rowcount == 0:
+                raise UserError('Подписка с таким ID не найдена.')
+        else:
+            self.db.execute('''INSERT INTO reaction_subscriptions(guild_id,player_id,emoji) VALUES (?,?,?)
+                               ON CONFLICT(guild_id,player_id) DO UPDATE SET emoji=excluded.emoji''',
+                            (guild_id, player_id, emoji))
+
+    def delete_reaction_subscription(self, guild_id, player_id):
+        return bool(self.db.execute('DELETE FROM reaction_subscriptions WHERE guild_id=? AND player_id=?',
+                                    (guild_id, player_id)).rowcount)
 
     def reaction_role_settings(self, guild_id):
         row = self.db.execute('SELECT * FROM reaction_role_settings WHERE guild_id=?', (guild_id,)).fetchone()

@@ -61,7 +61,7 @@ class CommandCatalogTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_paths_and_access_levels_match_approved_schema(self):
         commands=[c for c in self.bot.tree.walk_commands(guild=discord.Object(id=GUILD)) if isinstance(c,app_commands.Command)]
         self.assertEqual({c.qualified_name:c.extras.get('access','all') for c in commands},
-                         EXPECTED | {'реакции массово': 'admin'})
+                         EXPECTED | {'реакции массово': 'admin', 'реакции подписка': 'admin'})
         for c in commands:
             self.assertLessEqual(len(c.qualified_name.split()),3)
         for old in ('статистика','настройки','скупщик-уведомление','коровник-сбор','статус','админ-отчёты'):

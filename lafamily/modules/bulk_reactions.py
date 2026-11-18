@@ -9,6 +9,7 @@ from discord import app_commands
 from discord.http import Route
 
 from lafamily.errors import UserError
+from lafamily.modules.reaction_subscriptions import parse_emoji, register_subscriptions
 from lafamily.permissions import check_access
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ async def finish(interaction, text):
         logger.warning('Не удалось доставить личный итог операции.')
 
 
-def register_bulk_reactions(tree, guild_id):
+def register_bulk_reactions(tree, guild_id, store):
     group = app_commands.Group(name='реакции', description='Управление реакциями', guild_only=True,
                                default_permissions=discord.Permissions(administrator=True))
     tree.add_command(group, guild=discord.Object(id=guild_id))
@@ -121,9 +122,7 @@ def register_bulk_reactions(tree, guild_id):
         check_access(interaction, None, 'admin')
         if interaction.guild_id != guild_id or игрок.guild.id != guild_id:
             raise UserError('Выберите участника сервера семьи.')
-        emoji = discord.PartialEmoji.from_str(реакция.strip())
-        if emoji.id is None and (not emoji.name or emoji.name.isascii() or any(c.isspace() for c in emoji.name)):
-            raise UserError('Вставьте один эмодзи.')
+        emoji = parse_emoji(реакция)
         if running:
             raise UserError('Обработка уже идёт. Дождитесь завершения.')
         running = True
@@ -142,3 +141,5 @@ def register_bulk_reactions(tree, guild_id):
             await finish(interaction, text)
         finally:
             running = False
+
+    register_subscriptions(group, store, guild_id)

@@ -57,8 +57,9 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         commands = [c for c in self.bot.tree.walk_commands(guild=discord.Object(id=GUILD))
                     if isinstance(c,app_commands.Command)]
         hidden = [c for c in commands if c.extras.get('hidden')]
-        self.assertEqual([c.qualified_name for c in hidden], ['реакции массово'])
-        self.assertNotIn('/реакции массово',general_text + admin_text)
+        self.assertEqual([c.qualified_name for c in hidden], ['реакции массово', 'реакции подписка'])
+        for command in hidden:
+            self.assertNotIn('/' + command.qualified_name, general_text + admin_text)
         commands = [c for c in commands if c not in hidden]
         self.assertEqual(set(COMMAND_GUIDES),{c.qualified_name for c in commands})
         for command in commands:
