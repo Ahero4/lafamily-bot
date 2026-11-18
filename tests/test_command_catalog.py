@@ -85,8 +85,8 @@ class CommandCatalogTests(unittest.IsolatedAsyncioTestCase):
         with patch('lafamily.modules.bulk_reactions.apply_reactions', new_callable=AsyncMock) as apply:
             await command.callback(request, player, '🐰')
         apply.assert_awaited_once()
-        guild, player_id, emoji, _, _ = apply.await_args.args
-        self.assertEqual((guild, player_id, str(emoji)), (request.guild, player.id, '🐰'))
+        client, guild_id, player_id, emoji, _, _ = apply.await_args.args
+        self.assertEqual((client, guild_id, player_id, str(emoji)), (self.bot, GUILD, player.id, '🐰'))
 
     async def test_catalog_is_complete_grouped_and_has_only_names(self):
         pages=build_command_list(self.bot.tree,GUILD)

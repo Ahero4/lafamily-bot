@@ -1,12 +1,14 @@
 """Массовая обработка истории сообщений сервера."""
+import asyncio
 from dataclasses import dataclass
 import logging
 
 import discord
+from aiohttp import ClientError
 from discord import app_commands
+from discord.http import Route
 
 from lafamily.errors import UserError
-from lafamily.modules.reaction_roles import emoji_key
 from lafamily.permissions import check_access
 
 logger = logging.getLogger(__name__)
@@ -14,89 +16,82 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Result:
-    added: int = 0
-    existing: int = 0
+    confirmed: int = 0
     failed: int = 0
-    unavailable: int = 0
+    indexing: bool = False
 
     def summary(self):
-        return (f'Добавлено реакций: {self.added}. Уже стояло: {self.existing}. '
-                f'Не удалось поставить: {self.failed}. Недоступных каналов или списков веток: {self.unavailable}.')
+        summary = (f'Реакция подтверждена на сообщениях: {self.confirmed}. '
+                   f'Не удалось поставить: {self.failed}.')
+        if self.indexing:
+            summary += ' Discord ещё индексирует историю. В результатах могут отсутствовать старые сообщения.'
+        return summary
 
 
-async def destinations(guild, me, result):
-    try:
-        active = await guild.active_threads()
-    except discord.HTTPException:
-        result.unavailable += 1
-        active = guild.threads
-    for thread in active:
-        yield thread
-    for channel in guild.channels:
-        if isinstance(channel, discord.abc.Messageable):
-            yield channel
-        if not isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
-            continue
-        permissions = channel.permissions_for(me)
-        if not permissions.view_channel or not permissions.read_message_history:
-            if isinstance(channel, discord.ForumChannel):
-                result.unavailable += 1
-            continue
-        archives = [channel.archived_threads(limit=None)]
-        if isinstance(channel, discord.TextChannel) and not channel.is_news():
-            archives.append(channel.archived_threads(limit=None, private=True, joined=not permissions.manage_threads))
-        for archive in archives:
-            try:
-                async for thread in archive:
-                    yield thread
-            except discord.HTTPException:
-                result.unavailable += 1
-
-
-async def apply_reactions(guild, player_id, emoji, before, result):
-    key = emoji_key(emoji)
-    visited = set()
-    me = guild.me
-    if me is None:
-        raise UserError('Discord не предоставил данные бота на сервере.')
-    async for channel in destinations(guild, me, result):
-        if channel.id in visited:
-            continue
-        visited.add(channel.id)
+async def search_page(http, route, params):
+    for attempt in range(6):
         try:
-            permissions = channel.permissions_for(me)
-        except discord.ClientException:
-            # A thread can outlive its parent in the local channel cache.
-            result.unavailable += 1
-            continue
-        if not permissions.view_channel or not permissions.read_message_history:
-            result.unavailable += 1
-            continue
-        try:
-            async for message in channel.history(limit=None, before=before):
-                if message.author.id != player_id:
-                    continue
-                matching = next((r for r in message.reactions
-                                 if emoji_key(discord.PartialEmoji.from_str(str(r.emoji))) == key), None)
-                if matching is not None and matching.me:
-                    result.existing += 1
-                    continue
-                if not permissions.add_reactions and matching is None:
-                    result.failed += 1
-                    continue
+            page = await http.request(route, params=params)
+        except discord.Forbidden as error:
+            raise UserError('Discord запретил поиск. Проверьте доступ к истории и настройку Message Content Intent.') from error
+        except discord.HTTPException as error:
+            raise UserError(f'Поиск Discord недоступен (HTTP {error.status}, код {error.code}).') from error
+        if not isinstance(page, dict):
+            raise UserError('Discord вернул неожиданный ответ поиска.')
+        if page.get('code') != 110000:
+            return page
+        # discord.py returns the JSON body for all 2xx responses, including 202.
+        delay = page.get('retry_after', 0)
+        if attempt == 5 or not isinstance(delay, (int, float)) or not 0 <= delay <= 30:
+            raise UserError('Discord ещё готовит поисковый индекс. Повторите команду позже.')
+        await asyncio.sleep(delay or 1)
+
+
+async def apply_reactions(client, guild_id, player_id, emoji, before, result):
+    route = Route('GET', '/guilds/{guild_id}/messages/search', guild_id=guild_id)
+    cursor = before
+    while True:
+        page = await search_page(client.http, route, {
+            'author_id': [str(player_id)], 'max_id': str(cursor), 'limit': 25,
+            'sort_by': 'timestamp', 'sort_order': 'desc', 'include_nsfw': 'true',
+        })
+        result.indexing |= bool(page.get('doing_deep_historical_index'))
+        groups = page.get('messages')
+        if not isinstance(groups, list):
+            raise UserError('Discord вернул результат поиска без списка сообщений.')
+        if not groups:
+            if page.get('total_results', 0) > 0:
+                raise UserError('Поиск Discord сообщил о результатах, но не вернул сообщения. Повторите позже.')
+            return
+
+        hits = {}
+        for group in groups:
+            if not isinstance(group, list):
+                raise UserError('Discord вернул некорректную группу сообщений.')
+            for raw in group:
                 try:
-                    await message.add_reaction(emoji)
-                except discord.HTTPException as error:
-                    result.failed += 1
-                    if error.code == 10014 and emoji.id is None:
-                        raise UserError('Discord не распознал эмодзи.') from error
-                    if error.code == 50083:  # Discord refuses writes to archived threads.
-                        result.unavailable += 1
-                        break
-                else:
-                    result.added += 1
-        except discord.HTTPException:
-            result.unavailable += 1
+                    if (raw.get('hit') is False or int(raw.get('guild_id', guild_id)) != guild_id
+                            or int(raw['author']['id']) != player_id):
+                        continue
+                    message_id, channel_id = int(raw['id']), int(raw['channel_id'])
+                except (AttributeError, KeyError, TypeError, ValueError) as error:
+                    raise UserError('Discord вернул некорректные данные сообщения.') from error
+                if 0 < message_id < cursor and channel_id > 0:
+                    hits[message_id] = channel_id
+        if not hits:
+            raise UserError('Поиск Discord не вернул более ранних сообщений выбранного участника.')
+        for message_id, channel_id in hits.items():
+            channel = client.get_partial_messageable(channel_id, guild_id=guild_id)
+            try:
+                await channel.get_partial_message(message_id).add_reaction(emoji)
+            except discord.HTTPException as error:
+                result.failed += 1
+                if error.code == 10014 and emoji.id is None:
+                    raise UserError('Discord не распознал эмодзи.') from error
+            else:
+                result.confirmed += 1
+        # Search omits reactions and can return short pages. Advance by ID, independent of offsets and totals.
+        cursor = min(hits)
 
 
 async def finish(interaction, text):
@@ -133,11 +128,13 @@ def register_bulk_reactions(tree, guild_id):
             raise UserError('Обработка уже идёт. Дождитесь завершения.')
         running = True
         try:
-            await interaction.response.send_message('Обрабатываю историю. Если это займёт больше 15 минут, '
+            await interaction.response.send_message('Ищу сообщения участника. Если это займёт больше 15 минут, '
                                                     'итог придёт в личные сообщения, если они открыты.', ephemeral=True)
             result = Result()
             try:
-                await apply_reactions(interaction.guild, игрок.id, emoji, discord.Object(id=interaction.id), result)
+                await apply_reactions(tree.client, guild_id, игрок.id, emoji, interaction.id, result)
+            except (ClientError, OSError, discord.RateLimited):
+                text = f'Связь с Discord прервалась. Повторите команду позже. {result.summary()}'
             except UserError as error:
                 text = f'Обработка остановлена. {error} {result.summary()}'
             else:
