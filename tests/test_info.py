@@ -56,6 +56,10 @@ class InfoTests(unittest.IsolatedAsyncioTestCase):
         general_text,admin_text = page_text(general),page_text(admin)
         commands = [c for c in self.bot.tree.walk_commands(guild=discord.Object(id=GUILD))
                     if isinstance(c,app_commands.Command)]
+        hidden = [c for c in commands if c.extras.get('hidden')]
+        self.assertEqual([c.qualified_name for c in hidden], ['реакции массово'])
+        self.assertNotIn('/реакции массово',general_text + admin_text)
+        commands = [c for c in commands if c not in hidden]
         self.assertEqual(set(COMMAND_GUIDES),{c.qualified_name for c in commands})
         for command in commands:
             administrative = command.extras.get('access','all') in ('manager','admin')

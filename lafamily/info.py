@@ -65,7 +65,7 @@ def _command_pages(interaction, tree, store, administrative=False):
     if not settings:
         page.add_field(name='Первый запуск',value='Роли ещё не настроены. Обратитесь к администратору сервера.',inline=False)
     commands = [c for c in tree.walk_commands(guild=discord.Object(id=interaction.guild_id))
-                if isinstance(c,app_commands.Command) and c.extras.get('access','all') in levels]
+                if isinstance(c,app_commands.Command) and not c.extras.get('hidden') and c.extras.get('access','all') in levels]
     commands.sort(key=lambda c: (levels.index(c.extras.get('access','all')),c.qualified_name))
     for command in commands:
         level = command.extras.get('access','all')
@@ -254,7 +254,7 @@ def build_command_list(tree, guild_id):
     """Только полные названия, включая служебные команды, без фильтрации по правам."""
     sections = {}
     for command in tree.walk_commands(guild=discord.Object(id=guild_id)):
-        if isinstance(command, app_commands.Command):
+        if isinstance(command, app_commands.Command) and not command.extras.get('hidden'):
             root = command.qualified_name.split()[0]
             section = COMMAND_SECTIONS.get(root, root)
             sections.setdefault(section, []).append(command.qualified_name)
