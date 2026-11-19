@@ -295,6 +295,8 @@ def register_garden(tree,service,guild_id):
     @app_commands.guild_only()
     async def garden(interaction: discord.Interaction):
         service.check(interaction,interaction.user.id)
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         embed,view=await service.card(interaction.user.id)
         await interaction.edit_original_response(embed=embed,view=view)
+
+    return {'garden': garden.callback}

@@ -143,3 +143,5 @@ def register_delivery_commands(tree, service, guild):
         finally:
             for file in files:
                 file.close()
+
+    return {'reports': configure.callback, 'statistics': statistics.callback}

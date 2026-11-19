@@ -61,7 +61,7 @@ def register_insights(tree, client, store, guild_id):
     @points.command(name='история',description='Начисления, бонусы и отмены ваших баллов',extras={'access':'all'})
     @app_commands.rename(page='страница')
     async def history(interaction: discord.Interaction,page:app_commands.Range[int,1,10000]=1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         rows = await database_call(store,'points_history',str(interaction.guild_id),str(interaction.user.id),(page-1)*5,5)
         lines = []
         for r in rows:
@@ -74,7 +74,7 @@ def register_insights(tree, client, store, guild_id):
     @profile.command(name='профиль',description='Баллы, участие, победы и MVP',extras={'access':'all'})
     @app_commands.rename(member='участник')
     async def participant(interaction:discord.Interaction,member:discord.Member|None=None):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         member = member or interaction.user
         data = await database_call(store,'participant_profile',str(interaction.guild_id),str(member.id),week_range())
         text = (f'**Карточка <@{member.id}>**\nВсего баллов: **{data["total"]}**; за неделю: **{data["week"]}**.\n'
@@ -126,7 +126,7 @@ def register_insights(tree, client, store, guild_id):
     @prices.command(name='история',description='Динамика цены товара: таблица, CSV и график',extras={'access':'all'})
     @app_commands.rename(item='товар',days='дней')
     async def price_history(interaction:discord.Interaction,item:str,days:app_commands.Range[int,1,366]=30):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if item not in LIMITS:
             raise UserError('Выберите товар из подсказок.')
         settings = await database_call(store, 'price_settings', str(interaction.guild_id))
@@ -153,7 +153,7 @@ def register_insights(tree, client, store, guild_id):
 
     @prices.command(name='проверить-лс',description='Отправить себе тестовое личное сообщение',extras={'access':'all'})
     async def test_private(interaction:discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         now = datetime.now(UTC)
         # Ограничение на пользователя, а не на подписку: тест не меняет её циклы.
         previous = getattr(client,'private_checks',{}).get(interaction.user.id)
@@ -170,3 +170,5 @@ def register_insights(tree, client, store, guild_id):
         except Exception:
             text = 'Отправка не подтверждена. Проверьте ЛС; автоматического повтора нет.'
         await interaction.edit_original_response(content=text)
+
+    return {'profile': participant.callback, 'points': history.callback, 'history': price_history.callback, 'test_dm': test_private.callback}

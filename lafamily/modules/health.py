@@ -136,7 +136,7 @@ def register_health(tree,service,guild_id):
     store=service.store
     @group.command(name='диагностика',description='Данные, каналы, права и последний успешный бэкап',extras={'access':'admin'})
     async def diagnostics(interaction:discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'admin')
         data=await service.inspect()
         text=(f'**Диагностика**\nSQLite: {data["integrity"]}\nОтчётов: {data["reports"]}; участников истории: {data["members"]}; баллов: {data["active_points"]}.\n'+
@@ -148,7 +148,7 @@ def register_health(tree,service,guild_id):
     @group.command(name='операции',description='Незавершённые публикации, заявки и доставки',extras={'access':'admin'})
     @app_commands.rename(page='страница')
     async def operations(interaction:discord.Interaction,page:app_commands.Range[int,1,100]=1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'admin')
         rows=await database_call(store,'unfinished_operations',str(interaction.guild_id))
         labels={'report':'Отчёт','prices':'Сводка цен','delivery':'ЛС','signup':'Карточка записи','onboarding':'Заявка'}
@@ -166,3 +166,5 @@ def register_health(tree,service,guild_id):
             raise UserError('Доступно восстановление карточки отчёта.')
         text = await service.recover_report(interaction.guild, number)
         await interaction.edit_original_response(content=text)
+
+    return {'diagnostics': diagnostics.callback, 'operations': operations.callback}

@@ -27,6 +27,7 @@ from lafamily.modules.nicknames import register_nickname_command
 from lafamily.modules.prices.service import PriceService
 from lafamily.modules.prices.commands import register_price_commands
 from lafamily.modules.barn import register_barn_commands
+from lafamily.modules.menu import MenuLauncher, register_menu
 from lafamily.modules.garden import GardenService, GardenReminderButton, register_garden
 from lafamily.modules.onboarding import OnboardingService, EntryView, ReviewView, RecoveryView, register_onboarding
 
@@ -70,25 +71,27 @@ class FamilyBot(discord.Client):
         self.tree.add_command(AnnouncementCommands(self.announcements), guild=discord.Object(id=config.guild_id))
         register_barn_commands(self.tree, store, config.guild_id)
         self.garden = GardenService(self, store, config.guild_id)
-        register_garden(self.tree, self.garden, config.guild_id)
+        menu_actions = register_garden(self.tree, self.garden, config.guild_id)
         self.onboarding = OnboardingService(store)
         register_onboarding(self.tree, self.onboarding, config.guild_id)
         register_nickname_command(self.tree, store, config.guild_id)
         self.release_updates = ReleaseUpdates(self, store, config.guild_id)
         register_release_updates(self.tree, self.release_updates, config.guild_id)
         self.prices = PriceService(self, store, config.guild_id)
-        register_price_commands(self.tree, self.prices, config.guild_id)
+        menu_actions.update(register_price_commands(self.tree, self.prices, config.guild_id))
         self.backups = DatabaseBackups(self, store, config.guild_id)
         register_database_backups(self.tree, self.backups, config.guild_id)
-        register_insights(self.tree,self,store,config.guild_id)
+        menu_actions.update(register_insights(self.tree,self,store,config.guild_id))
         register_planning(self.tree,self,store,config.guild_id)
         self.reaction_roles = ReactionRoles(self, store, config.guild_id)
         register_reaction_roles(self.tree, self.reaction_roles)
         register_bulk_reactions(self.tree, config.guild_id, store)
         self.health=HealthService(self,store,config.guild_id)
-        register_health(self.tree,self.health,config.guild_id)
+        menu_actions.update(register_health(self.tree,self.health,config.guild_id))
+        self.menu = register_menu(self, menu_actions)
 
     async def setup_hook(self):
+        self.add_view(MenuLauncher(self.menu))
         self.add_dynamic_items(GardenReminderButton)
         # Постоянные кнопки продолжают работать после перезапуска.
         self.add_view(EntryView(self.onboarding))

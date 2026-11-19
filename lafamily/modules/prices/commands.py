@@ -13,7 +13,7 @@ from .delivery_reports import register_delivery_commands
 def register_price_commands(tree, service, guild_id):
     guild = discord.Object(id=guild_id)
     group = command_group(tree, guild_id, 'скупщик', 'Цены, подписки и история доставки')
-    register_delivery_commands(tree, service, guild)
+    actions = register_delivery_commands(tree, service, guild)
 
     @group.command(name='настройки', description='Выбрать канал для сравнения цен скупщиков', extras={'access': 'manager'})
     @app_commands.guild_only()
@@ -75,3 +75,5 @@ def register_price_commands(tree, service, guild_id):
         view = PriceSubscriptionView(service, interaction, items, modes)
         await interaction.edit_original_response(content=view.prompt(), view=view,
                                                  allowed_mentions=discord.AllowedMentions.none())
+
+    return actions | {'subscriptions': subscribe.callback}

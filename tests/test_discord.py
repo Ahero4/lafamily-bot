@@ -127,7 +127,8 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
             bot.tree.sync = AsyncMock(return_value=[])
             with patch.object(bot, "add_view") as add_view:
                 await bot.setup_hook()
-                self.assertEqual(add_view.call_count, 4)
+                registered = [type(call.args[0]).__name__ for call in add_view.call_args_list]
+                self.assertCountEqual(registered, ['EntryView', 'ReviewView', 'RecoveryView', 'SignupView', 'MenuLauncher'])
             bot.tree.sync.assert_awaited_once_with(guild=discord.Object(id=int(GUILD)))
             await bot.on_ready()
             await bot.on_ready()
@@ -150,7 +151,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
         try:
             commands = bot.tree.get_commands(guild=discord.Object(id=int(GUILD)))
             data = {command.name: command.to_dict(bot.tree) for command in commands}
-            self.assertEqual(set(data), {"мп", "баллы", "бот", "помощь", "команды", "инфо", "ники", "скупщик", "коровник", "старт", "заявки", "анонс", "участник", "роль", "сад", "реакции"})
+            self.assertEqual(set(data), {"мп", "баллы", "бот", "помощь", "команды", "инфо", "ники", "скупщик", "коровник", "старт", "заявки", "анонс", "участник", "роль", "сад", "реакции", "меню"})
             role_setup, = data["роль"]["options"]
             self.assertEqual(role_setup["name"], "выдача")
             self.assertEqual([item["name"] for item in role_setup["options"]],
