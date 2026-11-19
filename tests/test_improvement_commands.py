@@ -58,11 +58,29 @@ class ImprovementCommandTests(unittest.IsolatedAsyncioTestCase):
         self.store.set_price_subscription(G,V,'Медь',True)
         interaction=self.interaction()
         await self.command('участник профиль').callback(interaction,SimpleNamespace(id=int(V)))
-        text=interaction.edit_original_response.call_args.kwargs['content']
-        self.assertNotIn('Медь',text);self.assertNotIn('подписки',text)
-        self.store.set_price_subscription(G,U,'Капуста',True)
+        payload = interaction.edit_original_response.call_args.kwargs
+        foreign = payload['embed']
+        self.assertNotIn('Медь', str(foreign.to_dict()))
+        self.assertEqual([field.name for field in foreign.fields], ['Баллы', 'Участие в отчётах за всё время'])
+        self.assertIn('сборах коровника', foreign.footer.text)
+        self.assertEqual(payload['allowed_mentions'].to_dict(), {'parse': []})
         await self.command('участник профиль').callback(interaction)
-        self.assertIn('Капуста',interaction.edit_original_response.call_args.kwargs['content'])
+        empty = interaction.edit_original_response.call_args.kwargs['embed']
+        self.assertIn('Пока нет подписок', empty.fields[-1].value)
+        from lafamily.modules.prices.parser import LIMITS
+        for item in LIMITS:
+            self.store.set_price_subscription(G,U,item,True)
+        await self.command('участник профиль').callback(interaction)
+        full = interaction.edit_original_response.call_args.kwargs['embed']
+        subscriptions = full.fields[-1]
+        self.assertFalse(subscriptions.inline)
+        self.assertIn(str(len(LIMITS)), subscriptions.name)
+        for item in LIMITS:
+            self.assertIn(item, subscriptions.value)
+        self.assertIn('**Охота**', subscriptions.value)
+        self.assertIn('**Продукты**', subscriptions.value)
+        self.assertLessEqual(len(subscriptions.value), 1024)
+        self.assertLessEqual(len(full), 6000)
 
     async def test_history_handles_maximum_names_and_cancellation_reasons(self):
         kind=self.store.set_type(G,U,'*'*80,10)

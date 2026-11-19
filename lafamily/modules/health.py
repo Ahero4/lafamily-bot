@@ -139,9 +139,13 @@ def register_health(tree,service,guild_id):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'admin')
         data=await service.inspect()
-        text=(f'**Диагностика**\nSQLite: {data["integrity"]}\nОтчётов: {data["reports"]}; участников истории: {data["members"]}; баллов: {data["active_points"]}.\n'+
-              '\n'.join(data['channels'])+'\n'+('\n'.join(data['warnings']) or 'Проблем не обнаружено.')+
-              f'\nНезавершённых операций в выборке: {len(data["operations"])}. Подробности: /бот операции.')
+        warnings = '\n'.join(f'• {warning}' for warning in data['warnings']) or 'Проблем не обнаружено.'
+        channels = '\n'.join(data['channels']) or 'Каналы пока не настроены.'
+        text = (f'**Диагностика бота**\n\n**Результат проверки**\n{warnings}\n\n'
+                f'**База данных**\nSQLite: {data["integrity"]}\n'
+                f'Отчётов: {data["reports"]} · Участников: {data["members"]} · Баллов: {data["active_points"]}\n\n'
+                f'**Каналы и права**\n{channels}\n\n'
+                f'Незавершённых операций в выборке: {len(data["operations"])}. Подробности — в `/бот операции`.')
         await interaction.edit_original_response(content=text[:1750]+'\nПолная диагностика — в приложенном файле.',
             attachments=[discord.File(BytesIO(text.encode('utf-8-sig')),filename='diagnostics.txt')],allowed_mentions=discord.AllowedMentions.none())
 

@@ -13,9 +13,32 @@ from lafamily.confirmations import ConfirmAction
 from lafamily.errors import UserError
 from lafamily.permissions import require_access_async
 from lafamily.modules.events.time import MOSCOW, display_date, timestamp, week_range
-from lafamily.modules.prices.parser import LIMITS
+from lafamily.modules.prices.formatting import CATEGORIES
+from lafamily.modules.prices.parser import LIMITS, PRODUCTS
 
 STATES = {'prepared':'Подготовлена','approved':'Утверждена','paid':'Выплачена'}
+
+
+def profile_card(member_id, data, subscriptions):
+    embed = discord.Embed(title='Профиль участника', description=f'<@{member_id}>', colour=0x5865F2)
+    embed.add_field(name='Баллы', inline=False, value=(
+        f'**{data["week"]}** за текущую неделю\n**{data["total"]}** за всё время'))
+    embed.add_field(name='Участие в отчётах за всё время', inline=False, value=(
+        f'Участий — **{data["events"]}**\nПобед — **{data["wins"]}**\nMVP — **{data["mvps"]}**'))
+    if subscriptions is not None:
+        remaining = set(subscriptions)
+        groups = []
+        for label, items in (*CATEGORIES, ('Продукты', PRODUCTS)):
+            matches = [name for name in items if name in remaining]
+            if matches:
+                groups.append(f'**{label}** · ' + ', '.join(matches))
+                remaining.difference_update(matches)
+        if remaining:
+            groups.append('**Остальное** · ' + ', '.join(sorted(remaining)))
+        embed.add_field(name=f'Подписки скупщика · {len(subscriptions)}', inline=False,
+                        value='\n'.join(groups) or 'Пока нет подписок. Выбрать товары можно в разделе «Скупщик».')
+    embed.set_footer(text='В статистику входят действующие отчёты о МП и сборах коровника.')
+    return embed
 
 
 def sheet_text(sheet):
@@ -67,8 +90,9 @@ def register_insights(tree, client, store, guild_id):
         for r in rows:
             status = f'Отменён: {discord.utils.escape_markdown(r["cancel_reason"] or "без причины")[:100]}' if r['cancelled_at'] else f'+{r["awarded"]} балл.'
             if r['cancelled_at'] and r['cancelled_by']:status+=f' · <@{r["cancelled_by"]}>'
-            lines.append(f'**#{r["id"]} {discord.utils.escape_markdown(r["type_name"])[:80]}** · {display_date(r["occurred_at"])} МСК\n'
-                         f'База {r["base_points"]} + победа {r["win_bonus"]} + MVP {r["mvp_points"]}. {status}')
+            lines.append(f'**{discord.utils.escape_markdown(r["type_name"])[:80]}** · отчёт #{r["id"]}\n'
+                         f'{display_date(r["occurred_at"])} МСК · {status}\n'
+                         f'Базовые баллы: {r["base_points"]} · За победу: {r["win_bonus"]} · MVP: {r["mvp_points"]}')
         await interaction.edit_original_response(content=f'**История баллов • страница {page}**\n'+('\n\n'.join(lines) or 'Записей нет.'),allowed_mentions=discord.AllowedMentions.none())
 
     @profile.command(name='профиль',description='Баллы, участие, победы и MVP',extras={'access':'all'})
@@ -77,12 +101,11 @@ def register_insights(tree, client, store, guild_id):
         await interaction.response.defer(ephemeral=True, thinking=True)
         member = member or interaction.user
         data = await database_call(store,'participant_profile',str(interaction.guild_id),str(member.id),week_range())
-        text = (f'**Карточка <@{member.id}>**\nВсего баллов: **{data["total"]}**; за неделю: **{data["week"]}**.\n'
-                f'Участий: {data["events"]}; побед: {data["wins"]}; MVP: {data["mvps"]}.\nОтменённые отчёты исключены.')
+        selected = None
         if member.id == interaction.user.id:
             selected = await database_call(store,'price_subscriptions',str(interaction.guild_id),str(member.id))
-            text += '\nВаши подписки: '+(', '.join(selected) or 'нет')
-        await interaction.edit_original_response(content=text,allowed_mentions=discord.AllowedMentions.none())
+        await interaction.edit_original_response(embed=profile_card(member.id, data, selected),
+                                                 allowed_mentions=discord.AllowedMentions.none())
 
     @sheets.command(name='создать',description='Сохранить снимок недельной премии',extras={'access':'admin'})
     @app_commands.rename(bank='банк',week='неделя')
@@ -138,13 +161,13 @@ def register_insights(tree, client, store, guild_id):
         end = datetime.now(MOSCOW).replace(hour=0,minute=0,second=0,microsecond=0)+timedelta(days=1)
         rows = await database_call(store,'price_history_data',str(interaction.guild_id),item,timestamp(end-timedelta(days=days)),timestamp(end))
         if not rows:
-            await interaction.edit_original_response(content='История за период пуста. Цены начнут сохраняться после установки этой версии.')
+            await interaction.edit_original_response(content=f'**История цен · {item}**\nЗа выбранный период нет отчётов по этому товару.')
             return
         output = StringIO(newline=''); writer = csv.writer(output,delimiter=';')
         writer.writerow(['Дата МСК','Минимум','Максимум','Отчётов'])
         writer.writerows((r['day'],r['minimum'],r['maximum'],r['reports']) for r in rows)
-        table = '\n'.join(f'{r["day"]} | ${r["minimum"]}–${r["maximum"]} | отчётов {r["reports"]}' for r in rows[-15:])
-        await interaction.edit_original_response(content=f'**{item} • последние 15 дней с данными**\n{table}\nПолный период — в CSV; график — файл SVG.',
+        table = '\n'.join(f'{r["day"]}  ·  **${r["minimum"]}–${r["maximum"]}**  ·  отчётов: {r["reports"]}' for r in rows[-15:])
+        await interaction.edit_original_response(content=f'**История цен · {item}**\nДиапазон цен за день, по Москве. Показаны дни с данными: {len(rows[-15:])} из {len(rows)}.\n\n{table}\n\nВсе даты — в CSV, график — в SVG.',
             attachments=[discord.File(BytesIO(output.getvalue().encode('utf-8-sig')),filename='prices.csv'),history_graph(item,rows)])
 
     @price_history.autocomplete('item')

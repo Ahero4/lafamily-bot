@@ -12,8 +12,23 @@ from lafamily.permissions import check_access
 from lafamily.responses import send_error
 
 OPEN_ID = 'lafamily:menu:open:v1'
+LAUNCHER_TEXT = '**Личное меню LaFamily**\nЗдесь можно посмотреть свои баллы, открыть сад и настроить уведомления о ценах.'
 TITLES = {'home': 'LaFamily', 'member': 'Участник', 'prices': 'Скупщик', 'admin': 'Администрирование',
           'publish': 'Закрепить карточку LaFamily', 'reports': 'Выбрать канал админских отчётов'}
+
+
+SECTION_TEXT = {
+    'home': 'В разделе «Участник» собраны профиль и история баллов. В саду можно проверить посадки, у скупщика — цены и подписки.',
+    'member': 'В профиле видны баллы за неделю и за всё время. В истории можно проверить начисления и отмены по каждому отчёту.',
+    'prices': 'Подписки определяют, при какой цене придёт ЛС. Чтобы посмотреть, как менялась цена, выберите товар в списке.',
+    'admin': 'Проверьте состояние бота, разберите незавершённые операции или посмотрите результаты рассылок.',
+    'publish': 'В выбранном канале бот закрепит кнопку «Открыть LaFamily». Каждый участник увидит своё личное меню.',
+    'reports': 'Выберите служебный канал для отчётов о доставке ЛС и предупреждений о состоянии бота. Сообщения увидят все, у кого есть доступ к каналу.',
+}
+
+
+def section_text(section):
+    return f'**{TITLES[section]}**\n{SECTION_TEXT[section]}'
 
 
 def check_server(interaction, client):
@@ -31,7 +46,7 @@ class FamilyMenu:
 
     async def open(self, interaction):
         check_server(interaction, self.client)
-        await interaction.response.send_message(content='**LaFamily**',
+        await interaction.response.send_message(content=section_text('home'),
             view=MenuView(self, interaction, 'home'), ephemeral=True)
 
     async def publish(self, interaction, channel_id):
@@ -51,9 +66,11 @@ class FamilyMenu:
                 if message.author.id == self.client.user.id and any(
                         getattr(button, 'custom_id', None) == OPEN_ID for row in message.components
                         for button in getattr(row, 'children', ())):
+                    if message.content != LAUNCHER_TEXT:
+                        await message.edit(content=LAUNCHER_TEXT, allowed_mentions=discord.AllowedMentions.none())
                     await interaction.edit_original_response(content=f'Карточка уже закреплена: {message.jump_url}')
                     return
-            posted = await channel.send('**LaFamily**', view=MenuLauncher(self),
+            posted = await channel.send(LAUNCHER_TEXT, view=MenuLauncher(self),
                                         allowed_mentions=discord.AllowedMentions.none())
             try:
                 await posted.pin(reason='Карточка меню LaFamily')
@@ -126,7 +143,7 @@ class MenuView(discord.ui.View):
         async def switch(current):
             if section == 'admin':
                 check_access(current, None, 'admin')
-            await current.response.edit_message(content=f'**{TITLES[section]}**',
+            await current.response.edit_message(content=section_text(section),
                                                 view=MenuView(self.menu, current, section))
             self.stop()
         button.callback = switch

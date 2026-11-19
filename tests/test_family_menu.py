@@ -9,7 +9,7 @@ from lafamily.bot import FamilyBot
 from lafamily.config import Config
 from lafamily.database import Store
 from lafamily.errors import UserError
-from lafamily.modules.menu import MenuLauncher, OPEN_ID
+from lafamily.modules.menu import LAUNCHER_TEXT, MenuLauncher, OPEN_ID
 
 
 class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
@@ -72,12 +72,20 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         channel.pins.side_effect = pins
         posted = SimpleNamespace(author=self.bot.user, jump_url='https://discord.com/channels/2/12/4',
                                  components=[SimpleNamespace(children=[SimpleNamespace(custom_id=OPEN_ID)])])
+        posted.content = '**LaFamily**'
+        posted.edit = AsyncMock(side_effect=lambda **kwargs: setattr(posted, 'content', kwargs['content']))
         posted.pin = AsyncMock(side_effect=lambda **kwargs: pinned.append(posted))
         channel.send = AsyncMock(return_value=posted)
-        for _ in range(2):
+        for _ in range(3):
             await self.bot.menu.publish(self.request, 12)
         channel.send.assert_awaited_once()
         posted.pin.assert_awaited_once()
+        posted.edit.assert_awaited_once()
+        updated = posted.edit.await_args.kwargs
+        self.assertEqual(set(updated), {'content', 'allowed_mentions'})
+        self.assertEqual(updated['content'], LAUNCHER_TEXT)
+        self.assertEqual(updated['allowed_mentions'].to_dict(), {'parse': []})
+        self.assertIn(posted.jump_url, self.request.edit_original_response.await_args.kwargs['content'])
         self.assertIn('уже закреплена', self.request.edit_original_response.await_args.kwargs['content'])
 
         pinned.clear()
