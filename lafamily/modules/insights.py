@@ -148,7 +148,7 @@ def register_insights(tree, client, store, guild_id):
 
     @prices.command(name='история',description='Динамика цены товара: таблица, CSV и график',extras={'access':'all'})
     @app_commands.rename(item='товар',days='дней')
-    async def price_history(interaction:discord.Interaction,item:str,days:app_commands.Range[int,1,366]=30):
+    async def price_history(interaction:discord.Interaction,item:str,days:app_commands.Range[int,1,30]=30):
         await interaction.response.defer(ephemeral=True, thinking=True)
         if item not in LIMITS:
             raise UserError('Выберите товар из подсказок.')

@@ -81,13 +81,48 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.data()['attempts']), 3)
 
     async def test_closed_dm_and_uncertain_send_are_recorded_separately(self):
-        self.members[123].send.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason='closed'), 'closed')
+        self.store.configure_admin_report_channel('1', '99', '3')
+        self.members[123].send.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason='closed'),
+                                                               {'code': 50007, 'message': 'private raw response'})
         self.members[456].send.side_effect = OSError('network')
         await notify_maximum_prices(self.store, self.message, self.report)
         row = self.data()['daily'][0]
         self.assertEqual((row['delivered'], row['sent'], row['failed'], row['uncertain']), (0,0,2,1))
         self.assertEqual({a['error_type'] for a in self.data()['attempts']}, {'Forbidden','OSError'})
-        self.assertEqual({a['admin_state'] for a in self.data()['attempts']}, {'disabled'})
+        self.assertEqual({a['admin_state'] for a in self.data()['attempts']}, {'sent'})
+        reason = next(a['error_reason'] for a in self.data()['attempts'] if a['error_type'] == 'Forbidden')
+        self.assertIn('50007', reason)
+        self.assertIn('Отправка ЛС', reason)
+        content = self.channel.send.await_args.kwargs['content']
+        self.assertIn('ошибок **2**', content)
+        self.assertNotIn(reason, content)
+        self.assertNotIn('50007', content)
+        self.assertNotIn('private raw response', content)
+        for member in self.members.values():
+            for call in member.send.await_args_list:
+                self.assertNotIn(reason, call.kwargs['content'])
+                self.assertNotIn('50007', call.kwargs['content'])
+        self.interaction.permissions.administrator = True
+        await self.command('скупщик статистика')(self.interaction)
+        self.assertIn(reason, self.interaction.edit_original_response.await_args.kwargs['content'])
+
+    async def test_group_with_one_sent_item_counts_as_a_successful_dm(self):
+        alerts = self.store.claim_price_alerts('1', '100', ['Медь', 'Капуста'])
+        alerts = [a for a in alerts if a['user_id'] == '123']
+        self.assertEqual(len(alerts), 2)
+        for alert, state, reason in zip(alerts, ('failed','sent'), ('SubscriptionChanged',None), strict=True):
+            self.store.db.execute("UPDATE price_delivery_attempts SET message_group='job:1' WHERE id=?", (alert['attempt_id'],))
+            self.store.finish_price_delivery(alert['attempt_id'], state, reason)
+        self.assertEqual(self.store.price_delivery_reasons('1', alerts[0]['run_id']), [])
+
+    async def test_server_error_marks_delivery_unconfirmed(self):
+        self.members[123].send.side_effect = discord.HTTPException(SimpleNamespace(status=503, reason='Down'), 'raw')
+        await notify_maximum_prices(self.store, self.message, self.report)
+        row = next(a for a in self.data()['attempts'] if a['user_id'] == '123')
+        self.assertEqual(row['state'], 'uncertain')
+        self.assertIn('503', row['error_reason'])
+        self.assertIn('не подтверждён', row['error_reason'])
+        self.assertNotIn('raw', row['error_reason'])
 
     async def test_report_failure_keeps_delivery_history_and_does_not_retry(self):
         self.store.configure_admin_report_channel('1', '99', '3')

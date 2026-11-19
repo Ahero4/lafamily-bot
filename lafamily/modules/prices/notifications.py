@@ -4,6 +4,7 @@ from datetime import datetime
 import discord
 
 from lafamily.async_database import database_call
+from lafamily.delivery_failure import delivery_failure
 from lafamily.diagnostics import log_error
 from lafamily.modules.events.time import MOSCOW
 from .parser import LIMITS, price_dm_revision
@@ -55,7 +56,7 @@ async def notify_maximum_prices(store, message, report):
         for alert in users:
             user = alert['user_id']
             sending = False
-            state, error_type = 'sent', None
+            state, error_type, failure = 'sent', None, None
             try:
                 # Кэш без Members Intent может содержать прежние роли участника.
                 member = await message.guild.fetch_member(int(user))
@@ -75,6 +76,7 @@ async def notify_maximum_prices(store, message, report):
                 # Включая закрытые DM, уход с сервера, HTTP- и сетевые ошибки.
                 # Публичного запасного уведомления нет; подписка сохраняется.
                 error_type = type(error).__name__
+                failure = delivery_failure(error, 'Отправка ЛС' if sending else 'Проверка получателя')
                 if isinstance(error, discord.Forbidden):
                     state = 'forbidden'
                 elif isinstance(error, discord.NotFound):
@@ -85,6 +87,6 @@ async def notify_maximum_prices(store, message, report):
                     state = 'failed'
                 log_error('Не удалось доставить личное уведомление о цене; автоповтор отключён', error)
             # Ошибка записи в журнал не считается ошибкой доставки.
-            await database_call(store, 'finish_price_delivery', alert['attempt_id'], state, error_type)
+            await database_call(store, 'finish_price_delivery', alert['attempt_id'], state, error_type, failure)
     if alerts:
         await send_admin_delivery_report(store, message, alerts[0]['run_id'])

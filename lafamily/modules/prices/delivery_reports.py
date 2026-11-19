@@ -15,8 +15,8 @@ from lafamily.permissions import require_access_async
 
 
 def report_period(days, now=None):
-    if not 1 <= days <= 366:
-        raise UserError('Период: от 1 до 366 дней.')
+    if not 1 <= days <= 30:
+        raise UserError('Период: от 1 до 30 дней.')
     now = (now or datetime.now(MOSCOW)).astimezone(MOSCOW)
     end = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     return timestamp(end - timedelta(days=days)), timestamp(end)
@@ -52,6 +52,19 @@ def format_dynamics(daily, view):
     if len(daily) > len(rows):
         tail += '\nПоказаны последние 10 дней с рассылками; полный период доступен через выгрузку.'
     return prefix + body + tail
+
+
+def format_reasons(reasons, budget):
+    if not reasons:
+        return ''
+    text = 'Причины проблем с доставкой:\n'
+    more = 'Другие причины — в подробной CSV-выгрузке.\n'
+    for index, (reason, count) in enumerate(reasons):
+        line = f'• {reason} ({count})\n'
+        if index == 6 or len(text + line) + len(more) > budget:
+            return text + more if len(text + more) <= budget else ''
+        text += line
+    return text
 
 
 async def send_admin_delivery_report(store, message, run_id):
@@ -116,11 +129,11 @@ def register_delivery_commands(tree, service, guild):
                   extras={'access': 'admin'})
     @app_commands.guild_only()
     @app_commands.rename(days='дней', view='вид', export='выгрузка')
-    @app_commands.describe(days='Период до сегодняшнего дня включительно, по Москве (1–366)',
+    @app_commands.describe(days='Период до сегодняшнего дня включительно, по Москве (1–30)',
                            view='Таблица или список', export='Приложить CSV по дням и отдельным попыткам доставки')
     @app_commands.choices(view=[app_commands.Choice(name='Таблица', value='table'),
                                 app_commands.Choice(name='Список', value='list')])
-    async def statistics(interaction: discord.Interaction, days: app_commands.Range[int, 1, 366] = 30,
+    async def statistics(interaction: discord.Interaction, days: app_commands.Range[int, 1, 30] = 30,
                          view: str = 'table', export: bool = False):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction, service.store, 'admin')
@@ -138,7 +151,12 @@ def register_delivery_commands(tree, service, guild):
                     file.fp.seek(0)
                     if size > limit:
                         raise UserError('CSV превышает лимит вложения сервера. Уменьшите период.')
-            await interaction.edit_original_response(content=format_dynamics(data['daily'], view), attachments=files,
+            content = format_dynamics(data['daily'], view)
+            if any(day['failed'] or day['uncertain'] for day in data['daily']):
+                reasons = await database_call(service.store, 'price_delivery_reasons',
+                                              str(interaction.guild_id), period=(start, end))
+                content += '\n' + format_reasons(reasons, 1999 - len(content)).rstrip()
+            await interaction.edit_original_response(content=content, attachments=files,
                                                      allowed_mentions=discord.AllowedMentions.none())
         finally:
             for file in files:

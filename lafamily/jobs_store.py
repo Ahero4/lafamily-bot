@@ -70,17 +70,17 @@ class JobsStore:
             self.db.execute("UPDATE delivery_jobs SET state='sending',tries=tries+1 WHERE id=?",(row['id'],))
             result=dict(row);result['attempt_ids']=json.loads(result['attempt_ids']);return result
 
-    def finish_price_job(self,number,state,error_type=None):
+    def finish_price_job(self,number,state,error_type=None,error_reason=None):
         with self.transaction():
-            self._finish_price_job(number, state, error_type)
+            self._finish_price_job(number, state, error_type, error_reason)
 
-    def _finish_price_job(self, number, state, error_type=None):
+    def _finish_price_job(self, number, state, error_type=None, error_reason=None):
         row = self.db.execute('SELECT * FROM delivery_jobs WHERE id=?', (number,)).fetchone()
         if not row or row['state'] not in ('queued', 'sending'):
             return
         self.db.execute('UPDATE delivery_jobs SET state=?,error_type=? WHERE id=?', (state, error_type, number))
         for attempt in json.loads(row['attempt_ids']):
-            self.finish_price_delivery(attempt, state, error_type)
+            self.finish_price_delivery(attempt, state, error_type, error_reason)
             if state == 'failed' and error_type == 'ExpiredPrice':
                 # Повторяем только первый сигнал, который заведомо не отправлялся.
                 self.db.execute('UPDATE price_subscriptions SET notified=0,notified_attempt_id=NULL '

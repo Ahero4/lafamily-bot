@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import discord
 from discord.ext import tasks
 from lafamily.async_database import database_call
+from lafamily.delivery_failure import delivery_failure
 from lafamily.diagnostics import log_error
 from lafamily.modules.events.time import MOSCOW
 from .parser import LIMITS, price_dm_revision
@@ -45,6 +46,7 @@ class PriceQueue:
     def __init__(self,client,store,guild_id):
         self.client,self.store,self.guild_id=client,store,guild_id
         self.lock=asyncio.Lock();self.recovered=False
+        self.next_cleanup = 0.0
 
     def start(self):
         if not self.poll.is_running():self.poll.start()
@@ -58,7 +60,18 @@ class PriceQueue:
     @tasks.loop(seconds=5)
     async def poll(self):
         try:
-            if self.client.is_ready():await self.drain()
+            if not self.client.is_ready() or getattr(getattr(self.client, 'backups', None), 'restoring', False):
+                return
+            now = asyncio.get_running_loop().time()
+            if now >= self.next_cleanup:
+                self.next_cleanup = now + 600
+                try:
+                    await database_call(self.store, 'prune_price_history', str(self.guild_id))
+                except Exception as error:
+                    log_error('Не удалось очистить историю скупщика', error)
+                else:
+                    self.next_cleanup = now + 86400
+            await self.drain()
         except Exception as error:log_error('Ошибка очереди ЛС скупщика',error)
 
     async def drain(self):
@@ -81,14 +94,17 @@ class PriceQueue:
             await database_call(self.store,'finish_price_job',job['id'],'failed','ExpiredPrice');return
         sending = False
         message = None
-        state,error_type='sent',None
+        state,error_type,failure='sent',None,None
+        stage = 'Получение канала цен'
         try:
             channel=await self.client.fetch_channel(int(job['channel_id']))
             if str(channel.guild.id)!=job['guild_id']:raise ValueError('GuildMismatch')
+            stage = 'Проверка получателя'
             member=await channel.guild.fetch_member(int(job['user_id']))
             if not channel.permissions_for(member).view_channel:
                 state,error_type='forbidden','ChannelAccessDenied'
             else:
+                stage = 'Подготовка сообщения'
                 if not await database_call(self.store,'current_price_job',job):
                     await database_call(self.store,'finish_price_job',job['id'],'failed','ExpiredPrice');return
                 body = await database_call(self.store, 'price_job_body', job)
@@ -107,19 +123,22 @@ class PriceQueue:
                 if len(content) > 2000:
                     # Старые задачи разбивались до добавления жирных подписей.
                     content = body + footer
+                stage = 'Отправка ЛС'
                 sending=True
                 await member.send(content=content, allowed_mentions=discord.AllowedMentions.none())
             message=SimpleNamespace(id=int(job['source_id']),guild=channel.guild,channel=channel)
         except Exception as error:
             error_type=type(error).__name__
+            failure = delivery_failure(error, stage)
             if isinstance(error,discord.Forbidden):state='forbidden'
             elif isinstance(error,discord.NotFound):state='not_found'
             elif not sending and job['tries']<2 and not isinstance(error,discord.HTTPException):
+                log_error(f'Подготовка ЛС будет повторена. {failure}', error)
                 await database_call(self.store,'defer_price_job',job['id'],error_type);return
             elif sending and (not isinstance(error,discord.HTTPException) or error.status>=500):state='uncertain'
             else:state='failed'
             log_error('Ошибка доставки ЛС из очереди',error)
-        await database_call(self.store,'finish_price_job',job['id'],state,error_type)
+        await database_call(self.store,'finish_price_job',job['id'],state,error_type,failure)
         if message:
             run=await database_call(self.store,'price_job_run',job['id'])
             summary=await database_call(self.store,'price_delivery_summary',job['guild_id'],run)
