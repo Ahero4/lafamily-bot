@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -15,14 +16,19 @@ class SignupTests(unittest.IsolatedAsyncioTestCase):
         view = ReportView(SimpleNamespace(views={}, store=store), draft)
         self.addCleanup(view.finish)
         interaction = SimpleNamespace(guild_id=1, guild=SimpleNamespace(), permissions=discord.Permissions.none(), user=SimpleNamespace(id=4, bot=False),
-            response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()))
-        await view.join.callback(interaction)
+            response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()), edit_original_response=AsyncMock())
+        async with view.lock:
+            joining = asyncio.create_task(view.join.callback(interaction))
+            await asyncio.sleep(0)
+            interaction.response.defer.assert_awaited_once()
+            self.assertFalse(joining.done())
+        await joining
         self.assertEqual(view.pending, [])
         self.assertEqual(draft.members, ['4'])
         self.assertFalse(view.confirm.disabled)
         await view.join.callback(interaction)
         self.assertEqual(view.pending, [])
-        interaction.response.send_message.assert_awaited_once()
+        interaction.followup.send.assert_awaited_once()
         with self.assertRaises(UserError):
             await view.validate(interaction)
         view.finish()
@@ -55,11 +61,11 @@ class SignupTests(unittest.IsolatedAsyncioTestCase):
         view = ReportView(SimpleNamespace(views={}), draft)
         self.addCleanup(view.finish)
         interaction = SimpleNamespace(guild_id=1, user=SimpleNamespace(id=4, bot=False, voice=None),
-            response=SimpleNamespace(edit_message=AsyncMock(), send_message=AsyncMock()))
+            response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()), edit_original_response=AsyncMock())
         await view.join.callback(interaction)
         self.assertEqual(draft.members, [])
-        self.assertIn('https://discord.com/channels/1/55', interaction.response.send_message.call_args.args[0])
-        self.assertEqual(interaction.response.send_message.call_args.kwargs['allowed_mentions'].users, [interaction.user])
+        self.assertIn('https://discord.com/channels/1/55', interaction.followup.send.call_args.args[0])
+        self.assertEqual(interaction.followup.send.call_args.kwargs['allowed_mentions'].users, [interaction.user])
         interaction.user.voice = SimpleNamespace(channel=SimpleNamespace(id=55))
         await view.join.callback(interaction)
         self.assertEqual(draft.members, ['4'])

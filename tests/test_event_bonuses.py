@@ -138,8 +138,8 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         self.store.configure_event_bonuses(G,A,self.kind,False,0,0)
         await self.commands.create_report.callback(self.commands,interaction,str(self.kind))
         view=self.service.views[(G,A)]
-        self.assertNotIn(view.select_outcome,view.children)
-        self.assertNotIn(view.select_mvp,view.children)
+        self.assertNotIn(view.select_outcome,view.walk_children())
+        self.assertNotIn(view.select_mvp,view.walk_children())
 
     async def test_organizer_draft_snapshots_rewards_and_checks_mvp_roster(self):
         self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
@@ -150,7 +150,7 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         await view.dispatch('outcome',interaction,'win')
         await view.dispatch('mvp',interaction,[SimpleNamespace(id=int(B),bot=False)])
         self.assertEqual((view.draft.win_bonus,view.draft.mvp_bonus),(15,7))
-        self.assertIn('25 очк.',view.payload()['content'])
+        self.assertIn('25 очк.',view.payload()['view'].children[0].content)
         view.draft.members=[A]
         with self.assertRaises(UserError):await self.service.confirm(interaction,view)
         self.assertEqual(self.store.db.execute('SELECT COUNT(*) FROM reports').fetchone()[0],0)
@@ -167,7 +167,7 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.commands.create_report.callback(self.commands,interaction,str(self.kind))
         view=self.service.views[(G,A)]
         view.draft.members=[A,B]
-        self.assertEqual(len({item.row for item in view.children}),5)
+        self.assertEqual(sum(isinstance(item, discord.ui.ActionRow) for item in view.children),5)
         for member in (SimpleNamespace(id=555555555555555555,bot=False),SimpleNamespace(id=int(B),bot=True)):
             with self.assertRaises(UserError):await view.dispatch('mvp',interaction,[member])
         foreign=self.interaction('organizer');foreign.user.id=int(B)
@@ -208,8 +208,8 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         interaction.edit_original_response.side_effect = None
         await view.dispatch('clear',interaction)
         self.assertEqual((view.draft.members,view.draft.mvp_id,view.draft.mvp_bonus),([],None,0))
-        fields = interaction.edit_original_response.call_args.kwargs['embeds']
-        self.assertNotIn(f'<@{B}>', str([embed.to_dict() for embed in fields]))
+        layout = interaction.edit_original_response.call_args.kwargs['view'].to_components()
+        self.assertNotIn(f'<@{B}>', str(layout))
 
     async def test_manager_changes_foreign_draft_and_confirms_without_changing_author(self):
         self.store.configure_event_bonuses(G,A,self.kind,True,15,7)
@@ -250,3 +250,104 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(UserError):await view.validate(admin)
         owner.user.roles=[]
         with self.assertRaises(UserError):await view.validate(owner)
+
+    async def test_public_roster_pages_pair_each_member_with_their_remove_button(self):
+        members = [str(int(A) + i) for i in range(100)]
+        view = self.service.new_view(Draft(G, A, C, self.kind, 'МП', 10, parse_event_date(None),
+            members=members, win_enabled=True, available_win_bonus=5, available_mvp_bonus=7))
+        guest = self.interaction('member')
+        guest.user.id = int(B)
+        seen = []
+        self.assertEqual(len(list(view.walk_children())), 40)
+        for page in range(15):
+            components = view.to_components()
+            self.assertLessEqual(len(list(view.walk_children())), 40)
+            self.assertEqual(view.payload()['allowed_mentions'].to_dict(), discord.AllowedMentions.none().to_dict())
+            sections = [row for row in components if row['type'] == discord.ComponentType.section.value]
+            for section in sections:
+                target = section['accessory']['custom_id'].split(':')[-2]
+                self.assertEqual(section['components'][0]['content'], f'{len(seen) + 1}. <@{target}>')
+                self.assertEqual(section['accessory']['emoji']['name'], '❌')
+                seen.append(target)
+            forward = next(item for item in view.walk_children() if getattr(item, 'label', None) == 'Далее')
+            if page == 14:
+                self.assertTrue(forward.disabled)
+            else:
+                await forward.callback(guest)
+        self.assertEqual(seen, members)
+        last = next(row.accessory for row in view.children if isinstance(row, discord.ui.Section)
+                    and members[-1] in row.accessory.custom_id)
+        with self.assertRaises(UserError):
+            await last.callback(guest)
+        guest.permissions = discord.Permissions(administrator=True)
+        await last.callback(guest)
+        self.assertEqual(view.draft.members, members[:-1])
+        remaining = next(row.accessory for row in view.children if isinstance(row, discord.ui.Section))
+        await remaining.callback(guest)
+        self.assertEqual(view.page, 13)
+
+    async def test_guest_refresh_recovers_single_page_after_discord_applies_unacknowledged_edit(self):
+        draft = Draft(G, A, C, self.kind, 'МП', 10, parse_event_date(None), members=[A, B])
+        view = self.service.new_view(draft)
+        refresh = view.refresh
+        target = next(row.accessory for row in view.children if isinstance(row, discord.ui.Section)
+                      and B in row.accessory.custom_id)
+        published = []
+        async def applied_but_reply_lost(**payload):
+            published.extend(payload['view'].to_components())
+            raise OSError('connection lost')
+
+        organizer = self.interaction()
+        organizer.edit_original_response.side_effect = applied_but_reply_lost
+        with self.assertRaises(OSError):
+            await target.callback(organizer)
+        self.assertNotIn(f'<@{B}>', str(published))
+        self.assertIn(refresh.custom_id, str(published))
+        self.assertIn(refresh, view.walk_children())
+        self.assertTrue(view.needs_refresh)
+
+        guest = self.interaction('member')
+        guest.user.id = int(B)
+        await refresh.callback(guest)
+        restored = guest.edit_original_response.call_args.kwargs['view'].to_components()
+        self.assertIn(f'<@{B}>', str(restored))
+        self.assertIn(target.custom_id, str(restored))
+        self.assertEqual(draft.members, [A, B])
+        self.assertFalse(view.needs_refresh)
+
+    async def test_remove_mvp_checks_live_roles_stale_click_and_confirmed_points(self):
+        draft = Draft(G, A, C, self.kind, 'МП', 10, parse_event_date(None), members=[A, B],
+                      mvp_id=B, mvp_bonus=7, available_mvp_bonus=7, duplicate_ack='old')
+        view = self.service.new_view(draft)
+        target = next(row.accessory for row in view.children if isinstance(row, discord.ui.Section)
+                      and B in row.accessory.custom_id)
+        other = self.interaction('organizer')
+        other.user.id = int(C)
+        other.guild_id = 999
+        with self.assertRaises(UserError):
+            await target.callback(other)
+        other.guild_id = int(G)
+        roles = other.user.roles
+        other.user.roles = []
+        with self.assertRaises(UserError):
+            await target.callback(other)
+        other.user.roles = roles
+        other.edit_original_response.side_effect = OSError('network')
+        with self.assertRaises(OSError):
+            await target.callback(other)
+        self.assertEqual((draft.members, draft.mvp_id, draft.mvp_bonus, draft.duplicate_ack), ([A, B], B, 7, 'old'))
+        self.assertTrue(view.needs_refresh)
+        other.edit_original_response.side_effect = None
+        self.assertIs(target.view, view)
+        self.assertIn(target, view.walk_children())
+        await target.callback(other)
+        self.assertEqual((draft.members, draft.mvp_id, draft.mvp_bonus, draft.duplicate_ack), ([A], None, 0, ''))
+        with self.assertRaises(UserError):
+            await target.callback(other)
+        self.service.channel = AsyncMock(return_value=SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=123))))
+        owner = self.interaction()
+        owner.guild.fetch_member = AsyncMock(return_value=SimpleNamespace(bot=False))
+        await view.dispatch('confirm', owner)
+        report = self.store.report(G, 1)
+        self.assertEqual((report['members'], report['points']), ([A], 10))
+        self.assertEqual(self.store.statistics(G, week_range(), B), [])

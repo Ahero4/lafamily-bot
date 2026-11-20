@@ -191,10 +191,10 @@ class AuditAsyncTests(unittest.IsolatedAsyncioTestCase):
         view = service.new_view(draft)
         shown = []
         async def lost_reply(**payload):
-            shown.append(payload['embeds'][0].fields[0].value)
+            shown.append(str(payload['view'].to_components()))
             raise OSError('reply lost after applying update')
         click = SimpleNamespace(guild_id=int(G),user=SimpleNamespace(id=int(V),bot=False),
-            response=SimpleNamespace(edit_message=AsyncMock(side_effect=lost_reply)))
+            response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock(side_effect=lost_reply))
         with self.assertRaises(OSError): await view.join.callback(click)
         self.assertIn(V,shown[0])
         self.assertEqual(draft.members,[U])

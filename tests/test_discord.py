@@ -71,7 +71,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
         confirm = self.interaction()
         await view.dispatch("confirm", confirm)
         self.assertEqual(self.store.statistics(GUILD, week_range(), MEMBER)[0]["points"], 12)
-        content = confirm.edit_original_response.call_args.kwargs["content"]
+        content = confirm.edit_original_response.call_args.kwargs["view"].children[0].content
         self.assertIn("Повторно подавать отчёт не нужно", content)
 
     async def test_role_loss_blocks_old_draft(self):

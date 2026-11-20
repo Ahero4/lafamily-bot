@@ -79,13 +79,15 @@ class VoicePickerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_button_opens_private_voice_only_picker_and_retains_layout(self):
         request=self.interaction()
+        original_layout = self.view.to_components()
         await self.view.choose_voice.callback(request)
         payload=request.edit_original_response.call_args.kwargs
         picker=payload['view'];self.addCleanup(picker.stop)
         self.assertTrue(request.response.defer.call_args.kwargs['ephemeral'])
         self.assertEqual(picker.channel_select.channel_types,[discord.ChannelType.voice])
         self.assertLessEqual(picker.timeout,300)
-        self.assertLessEqual(len(self.view.to_components()),5)
+        self.assertEqual(self.view.to_components(), original_layout)
+        self.assertLessEqual(len(list(self.view.walk_children())), 40)
         self.assertFalse(await picker.interaction_check(self.interaction(user=B)))
         # Отзыв роли после открытия проверяется непосредственно при добавлении.
         with self.assertRaises(UserError):await self.view.import_voice(self.interaction('member'),123)

@@ -88,10 +88,11 @@ class DraftFailureTests(unittest.IsolatedAsyncioTestCase):
         self.view.bind(original)
         await self.view.on_timeout()
         self.assertTrue(self.view.finished)
-        self.assertTrue(all(item.disabled for item in self.view.children))
+        self.assertTrue(all(item.disabled for item in self.view.walk_children() if item.is_dispatchable()))
         payload = original.edit_original_response.call_args.kwargs
-        self.assertIsNone(payload["view"])
-        self.assertIn("истёк", payload["content"])
+        terminal = payload["view"]
+        self.assertFalse(any(item.is_dispatchable() for item in terminal.walk_children()))
+        self.assertIn("истёк", terminal.children[0].content)
         self.assertEqual(self.service.views, {})
 
     async def test_replacement_retires_previous_message(self):
@@ -100,7 +101,9 @@ class DraftFailureTests(unittest.IsolatedAsyncioTestCase):
         replacement = await self.service.new_view_async(replace(self.draft, request_id="replacement"))
         self.assertTrue(self.view.finished)
         self.assertFalse(replacement.finished)
-        self.assertIn("заменён", original.edit_original_response.call_args.kwargs["content"])
+        closed = original.edit_original_response.call_args.kwargs["view"]
+        self.assertFalse(any(item.is_dispatchable() for item in closed.walk_children()))
+        self.assertIn("заменён", closed.children[0].content)
 
     async def test_slow_retirement_cannot_replace_a_newer_draft(self):
         started, release = asyncio.Event(), asyncio.Event()

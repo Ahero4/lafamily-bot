@@ -22,7 +22,7 @@ class HourDraftTests(unittest.IsolatedAsyncioTestCase):
     async def test_hour_lifetime_and_click_at_30_minutes(self):
         self.assertEqual(self.view.timeout,3600)
         self.assertAlmostEqual(self.view.expires_at-self.created,3600,delta=1)
-        self.assertIn('1 час',self.view.payload()['content'])
+        self.assertIn('1 час',self.view.payload()['view'].children[0].content)
         expires=self.view.expires_at
         self.interaction.guild_id=1
         self.interaction.user=SimpleNamespace(id=2)
@@ -40,7 +40,9 @@ class HourDraftTests(unittest.IsolatedAsyncioTestCase):
         self.view.message=message
         await self.view.on_timeout()
         original.edit_original_response.assert_not_awaited()
-        self.assertIsNone(message.edit.call_args.kwargs['view'])
+        closed = message.edit.call_args.kwargs['view'].to_components()
+        self.assertEqual(len(closed), 1)
+        self.assertIn('истёк', closed[0]['content'])
         self.assertTrue(self.view.finished)
 
     async def test_outcome_default_follows_selection_and_survives_other_updates(self):
@@ -50,7 +52,7 @@ class HourDraftTests(unittest.IsolatedAsyncioTestCase):
             await self.view.dispatch('clear',self.interaction)
             self.assertEqual([o.value for o in self.view.select_outcome.options if o.default],[selected])
             components=self.view.to_components()
-            result=next(c for r in components for c in r['components'] if c.get('custom_id','').startswith('mp:outcome:'))
+            result=next(c for r in components for c in r.get('components', ()) if c.get('custom_id','').startswith('mp:outcome:'))
             self.assertEqual([o['value'] for o in result['options'] if o['default']],[selected])
 
     async def test_failed_selection_restores_previous_default(self):

@@ -1,6 +1,7 @@
 """Сообщения отчётов и временная форма выбора состава мероприятия."""
 
 import asyncio
+from functools import partial
 import time
 from typing import TYPE_CHECKING
 
@@ -23,7 +24,7 @@ def add_members(embed: discord.Embed, members: list[str]):
     for offset in range(0, len(members), 25):
         embed.add_field(
             name=f"Участники {offset + 1}–{min(offset + 25, len(members))} из {len(members)}",
-            value=" ".join(f"<@{member}>" for member in members[offset:offset + 25]), inline=False,
+            value="\n".join(f"<@{member}>" for member in members[offset:offset + 25]), inline=False,
         )
 
 
@@ -58,8 +59,21 @@ def report_embed(report: dict) -> discord.Embed:
     return embed.set_footer(text="LaFamily • учёт мероприятий")
 
 
-class ReportView(discord.ui.View):
+def closed_draft(text):
+    layout = discord.ui.LayoutView(timeout=None)
+    layout.add_item(discord.ui.TextDisplay(text))
+    return {'view': layout, 'allowed_mentions': discord.AllowedMentions.none()}
+
+
+class ReportView(discord.ui.LayoutView):
     """Черновик живёт 1 час; им управляют автор и руководство сервера."""
+
+    PAGE_SIZE = 7
+    add_row = discord.ui.ActionRow()
+    confirm_row = discord.ui.ActionRow()
+    join_row = discord.ui.ActionRow()
+    outcome_row = discord.ui.ActionRow()
+    mvp_row = discord.ui.ActionRow()
 
     def __init__(self, service: "EventService", draft: Draft):
         # Каждый клик даёт свежий interaction; таймер завершения редактирует
@@ -75,22 +89,30 @@ class ReportView(discord.ui.View):
         self.original = None
         self.message = None
         self.expiry_handle = None
-        if not draft.win_enabled:
-            self.remove_item(self.select_outcome)
-        if not draft.available_mvp_bonus:
-            self.remove_item(self.select_mvp)
-        # Свой ID у каждого компонента позволяет отличить разные черновики.
-        for item in self.children:
-            item.custom_id = f"mp:{item.custom_id}:{draft.request_id}"
+        self.page = 0
+        self.roster_snapshot = tuple(draft.members)
+        self.roster_revision = 0
+        self.controls = [self.add_row, self.confirm_row, self.join_row]
+        if draft.win_enabled:
+            self.controls.append(self.outcome_row)
+        if draft.available_mvp_bonus:
+            self.controls.append(self.mvp_row)
+        for row in self.controls:
+            for item in row.children:
+                item.custom_id = f"mp:{item.custom_id}:{draft.request_id}"
+        self.payload()
 
-    async def validate(self, interaction: discord.Interaction):
+    def check_open(self, interaction):
         if self.finished or time.monotonic() >= self.expires_at:
             raise UserError("Черновик истёк или уже обработан. Создайте новый через /мп создать.")
         if str(interaction.guild_id) != self.draft.guild_id:
             raise UserError("Черновик относится к другому серверу.")
-        # Автор управляет своим черновиком; чужим — только руководство или admin.
+
+    async def validate(self, interaction: discord.Interaction, *, removal=False):
+        self.check_open(interaction)
+        # Любой организатор может убрать игрока. Остальные действия в чужом черновике доступны руководству.
         # Права читаются заново при каждом действии, включая открытые ранее меню.
-        level = "organizer" if str(interaction.user.id) == self.draft.organizer_id else "manager"
+        level = "organizer" if removal or str(interaction.user.id) == self.draft.organizer_id else "manager"
         await require_access_async(interaction, self.service.store, level)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -103,44 +125,103 @@ class ReportView(discord.ui.View):
             await send_error(interaction, error)
             return False
 
-    def payload(self, members=None) -> dict:
+    def payload(self, members=None, notice=None) -> dict:
         for option in self.select_outcome.options:
             option.default = option.value == self.draft.outcome
         members = self.draft.members if members is None else members
         self.confirm.disabled = (self.finished or not members
                                  or (self.draft.win_enabled and not self.draft.outcome))
-        embed = discord.Embed(colour=0x7289DA)
-        add_members(embed, members)
-        pending = [member for member in self.pending if member not in members]
-        for offset in range(0, len(pending), 25):
-            embed.add_field(name="Заявки — ожидают проверки организатором",
-                value=" ".join(f"<@{member}>" for member in pending[offset:offset + 25]), inline=False)
+        self.clear_items()
+        snapshot = tuple(members)
+        if self.roster_snapshot != snapshot:
+            self.roster_snapshot = snapshot
+            self.roster_revision += 1
+        last_page = max(0, (len(members) - 1) // self.PAGE_SIZE)
+        self.page = min(self.page, last_page)
+        start = self.PAGE_SIZE * self.page
+        lines = [f'**Подтверждение отчёта · {escape_markdown(self.draft.type_name)}**',
+                 f'{display_date(self.draft.occurred_at)} (Москва) · {self.draft.points + self.draft.win_bonus} очк. каждому']
+        if self.draft.note:
+            lines.append(f'Примечание: {escape_markdown(self.draft.note)}')
         if self.draft.voice_channel_id:
-            embed.add_field(name="Голосовой канал МП", value=f"<#{self.draft.voice_channel_id}>", inline=False)
-        if self.draft.win_enabled and not self.draft.outcome:
-            embed.add_field(name="Итог", value="Выберите Победа / Без победы в меню ниже.")
-        if self.draft.available_mvp_bonus and not self.draft.mvp_id:
-            embed.add_field(name="MVP", value=f"Не выбран • можно назначить одного участника состава (+{self.draft.available_mvp_bonus} очк.).")
-        if self.draft.outcome:
-            embed.add_field(name="Итог", value=("Победа" if self.draft.outcome == "win" else "Без победы") + f" • +{self.draft.win_bonus} каждому")
-        if self.draft.mvp_id:
-            embed.add_field(name="MVP", value=f"<@{self.draft.mvp_id}> • ещё +{self.draft.mvp_bonus} очк. (должен быть в составе)")
-        note = f"Примечание: {escape_markdown(self.draft.note)}\n" if self.draft.note else ""
-        content = (
-            f"**Подтверждение отчёта**\n{escape_markdown(self.draft.type_name)} • {self.draft.points + self.draft.win_bonus} очк. каждому\n"
-            f"{display_date(self.draft.occurred_at)} (Москва)\n{note}"
-            f"Подтверждено: **{len(members)}** · Ожидают проверки: **{len(pending)}** · Всего: **{len(members) + len(pending)}**.\n"
-            "Нажмите «Участвовать» — вы сразу попадёте в состав МП.\n"
-            "Автор и руководство могут менять состав, результат и MVP. Итоговое подтверждение начислит баллы всему составу. До 100 участников.\n"
-            "Черновик действует 1 час. Подтверждение сохранит отчёт и начислит очки."
-        )
-        return {"content": content, "embeds": [embed] if members or self.pending or self.draft.voice_channel_id or self.draft.outcome or self.draft.mvp_id else [], "view": self,
-                "allowed_mentions": discord.AllowedMentions.none()}
+            lines.append(f'Голосовой канал МП: <#{self.draft.voice_channel_id}>')
+        if self.draft.win_enabled:
+            outcome = {'win': 'Победа', 'no_win': 'Без победы'}.get(self.draft.outcome, 'выберите результат ниже')
+            lines.append(f'Итог: {outcome} · бонус каждому +{self.draft.win_bonus}')
+        if self.draft.available_mvp_bonus:
+            mvp = f'<@{self.draft.mvp_id}>' if self.draft.mvp_id else 'не выбран'
+            lines.append(f'MVP: {mvp} · бонус +{self.draft.available_mvp_bonus}')
+        pending = [member for member in self.pending if member not in members]
+        if pending:
+            lines.append(f'Ожидают проверки: {len(pending)} · всего с заявками: {len(members) + len(pending)}\n' + ', '.join(f'<@{member}>' for member in pending))
+        lines.extend(['', 'Нажмите «Участвовать», чтобы записаться. Организаторы могут убрать участника кнопкой ❌.',
+                      'Черновик действует 1 час. При подтверждении баллы получат только участники состава.',
+                      f'**Состав: {len(members)}/100** · страница {self.page + 1}/{last_page + 1}'])
+        if notice:
+            lines.insert(0, notice + '\n')
+        self.add_item(discord.ui.TextDisplay('\n'.join(lines)))
+        for index, player in enumerate(members[start:start + self.PAGE_SIZE], start=start+1):
+            button = discord.ui.Button(emoji='❌', style=discord.ButtonStyle.secondary,
+                custom_id=f'mp:remove:{self.draft.request_id}:{player}:{self.roster_revision}')
+            button.callback = partial(self.remove_player, player=player, revision=self.roster_revision)
+            self.add_item(discord.ui.Section(f'{index}. <@{player}>', accessory=button))
+        if last_page:
+            pages = discord.ui.ActionRow()
+            for label, page in (('Назад', self.page - 1), ('Далее', self.page + 1)):
+                button = discord.ui.Button(label=label, disabled=not 0 <= page <= last_page,
+                    custom_id=f'mp:page:{self.draft.request_id}:{page}')
+                button.callback = partial(self.show_page, page=page)
+                pages.add_item(button)
+            self.add_item(pages)
+        for row in self.controls:
+            self.add_item(row)
+        return {'view': self, 'allowed_mentions': discord.AllowedMentions.none()}
+
+    async def edit_layout(self, edit, members=None, *, page=None, notice=None):
+        # Discord.py хранит обработчики прежних кнопок. При сбое возвращаем эти же объекты,
+        # чтобы на опубликованной карточке можно было повторить нажатие.
+        previous = self.children
+        position = self.page, self.roster_snapshot, self.roster_revision
+        confirm_disabled = self.confirm.disabled
+        defaults = [option.default for option in self.select_outcome.options]
+        if page is not None:
+            self.page = max(0, page)
+        try:
+            await edit(**self.payload(members, notice))
+        except BaseException:
+            self.page, self.roster_snapshot, self.roster_revision = position
+            self.confirm.disabled = confirm_disabled
+            for option, selected in zip(self.select_outcome.options, defaults):
+                option.default = selected
+            self.clear_items()
+            for child in previous:
+                self.add_item(child)
+            self.needs_refresh = True
+            raise
+
+    async def show_page(self, interaction, *, page=None):
+        await interaction.response.defer()
+        async with self.lock:
+            self.check_open(interaction)
+            await self.edit_layout(interaction.edit_original_response, page=page)
+            self.needs_refresh = False
+
+    async def remove_player(self, interaction, *, player, revision):
+        await interaction.response.defer()
+        async with self.lock:
+            await self.validate(interaction, removal=True)
+            if revision != self.roster_revision or player not in self.draft.members:
+                raise UserError('Состав изменился. Выберите участника в текущем списке.')
+            members = [member for member in self.draft.members if member != player]
+            await self.update_members(interaction, members)
+            self.draft.duplicate_ack = ''
+
 
     def finish(self):
         self.finished = True
-        for item in self.children:
-            item.disabled = True
+        for item in self.walk_children():
+            if item.is_dispatchable():
+                item.disabled = True
         if self.expiry_handle:
             self.expiry_handle.cancel()
         self.stop()
@@ -159,9 +240,9 @@ class ReportView(discord.ui.View):
         if self.message is not None or self.original:
             try:
                 if self.message is not None:
-                    await self.message.edit(content=reason, embeds=[], view=None)
+                    await self.message.edit(**closed_draft(reason))
                 else:
-                    await self.original.edit_original_response(content=reason, embeds=[], view=None)
+                    await self.original.edit_original_response(**closed_draft(reason))
             except Exception as error:
                 from lafamily.diagnostics import log_error
                 log_error("Не удалось отключить старый черновик", error)
@@ -186,24 +267,26 @@ class ReportView(discord.ui.View):
                 self.message = interaction.message
             if action == "discard":
                 self.finish()
-                await interaction.edit_original_response(content="Черновик отменён. Очки не начислялись.", embeds=[], view=None)
+                await interaction.edit_original_response(**closed_draft("Черновик отменён. Очки не начислялись."))
                 return
             if action == 'allow_duplicate':
                 self.draft.enforce_duplicates = True
                 key, matches = await database_call(self.service.store, 'duplicate_report_key', self.draft)
                 if not matches:
                     raise UserError('Похожих отчётов нет. Используйте обычное подтверждение.')
-                payload = self.payload()
-                payload['content'] = ('Вы разрешили отдельный отчёт при наличии похожих: '+
-                    ', '.join(f'#{n}' for n in matches)+'. Проверьте состав и нажмите «Подтвердить отчёт».\n'+payload['content'])
-                await interaction.edit_original_response(**payload)
+                notice = 'Разрешён отдельный отчёт при наличии похожих: ' + ', '.join(f'#{n}' for n in matches)
+                await self.edit_layout(interaction.edit_original_response, notice=notice + '. Проверьте состав перед подтверждением.')
                 self.draft.duplicate_ack = key
                 return
             if action == "reject_pending":
                 # Отклонение — отдельное явное действие организатора, а не побочный эффект сохранения.
-                await interaction.edit_original_response(content="Оставшиеся заявки отклонены. Проверьте подтверждённый состав и нажмите «Подтвердить отчёт».", embeds=[], view=self)
+                previous = self.pending
                 self.pending = []
-                await interaction.edit_original_response(**self.payload())
+                try:
+                    await self.edit_layout(interaction.edit_original_response, notice="Оставшиеся заявки отклонены. Проверьте подтверждённый состав.")
+                except BaseException:
+                    self.pending = previous
+                    raise
                 return
             if action in ("outcome", "mvp"):
                 # Изменения сериализуются с составом и подтверждением. При сетевом
@@ -223,11 +306,9 @@ class ReportView(discord.ui.View):
                     self.draft.mvp_id = str(member.id) if member else None
                     self.draft.mvp_bonus = self.draft.available_mvp_bonus if member else 0
                 try:
-                    await interaction.edit_original_response(**self.payload())
+                    await self.edit_layout(interaction.edit_original_response)
                 except BaseException:
                     self.draft.outcome, self.draft.win_bonus, self.draft.mvp_id, self.draft.mvp_bonus = old
-                    self.payload()
-                    self.needs_refresh = True
                     raise
                 self.needs_refresh = False
                 return
@@ -244,32 +325,32 @@ class ReportView(discord.ui.View):
                     raise UserError(f"Ожидают проверки ещё {len(self.pending)} заявок. Подтвердите присутствующих через меню или явно отклоните оставшиеся заявки. Отчёт не сохранён.")
                 if self.needs_refresh:
                     # После неоднозначного сетевого сбоя сначала показываем сохранённый состав.
-                    payload = self.payload()
-                    payload["content"] = "Состав заново показан после ошибки связи. Проверьте его и подтвердите ещё раз.\n\n" + payload["content"]
-                    await interaction.edit_original_response(**payload)
+                    await self.edit_layout(interaction.edit_original_response,
+                        notice="Состав заново показан после ошибки связи. Проверьте его и подтвердите ещё раз.")
                     self.needs_refresh = False
                     return
                 content = await self.service.confirm(interaction, self)
-                await interaction.edit_original_response(content=content, embeds=[], view=None)
+                await interaction.edit_original_response(**closed_draft(content))
                 return
-            previous_mvp = (self.draft.mvp_id, self.draft.mvp_bonus)
-            if self.draft.mvp_id not in members:
-                self.draft.mvp_id, self.draft.mvp_bonus = None, 0
-            try:
-                await interaction.edit_original_response(**self.payload(members))
-            except BaseException:
-                self.draft.mvp_id, self.draft.mvp_bonus = previous_mvp
-                self.needs_refresh = True
-                self.payload()  # Восстанавливаем локальное состояние кнопки подтверждения.
-                raise
-            # Состав меняется только после успешного показа пользователю.
-            self.draft.members = members
-            self.pending = [member for member in self.pending if member not in members]
-            self.needs_refresh = False
+            await self.update_members(interaction, members)
 
-    @discord.ui.button(label="Участвовать", custom_id="join", style=discord.ButtonStyle.success, row=2)
+    async def update_members(self, interaction, members):
+        previous_mvp = (self.draft.mvp_id, self.draft.mvp_bonus)
+        if self.draft.mvp_id not in members:
+            self.draft.mvp_id, self.draft.mvp_bonus = None, 0
+        try:
+            await self.edit_layout(interaction.edit_original_response, members)
+        except BaseException:
+            self.draft.mvp_id, self.draft.mvp_bonus = previous_mvp
+            raise
+        # Состав меняется только после успешного показа пользователю.
+        self.draft.members = members
+        self.pending = [member for member in self.pending if member not in members]
+        self.needs_refresh = False
+
+    @join_row.button(label="Участвовать", custom_id="join", style=discord.ButtonStyle.success)
     async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Самозапись сразу включает участника в начисляемый состав; общий lock защищает от дублей.
+        await interaction.response.defer()
         async with self.lock:
             if self.finished or time.monotonic() >= self.expires_at:
                 raise UserError("Запись закрыта. Попросите организатора создать новый отчёт.")
@@ -280,7 +361,7 @@ class ReportView(discord.ui.View):
                 channel = getattr(voice, 'channel', None)
                 if channel is None or str(channel.id) != self.draft.voice_channel_id:
                     # Публично отмечаем только нажавшего, без упоминаний ролей и everyone.
-                    await interaction.response.send_message(
+                    await interaction.followup.send(
                         f'<@{interaction.user.id}>, МП проводится в <#{self.draft.voice_channel_id}>. '
                         f'Зайдите в канал и нажмите «Участвовать» снова.\n'
                         f'https://discord.com/channels/{self.draft.guild_id}/{self.draft.voice_channel_id}',
@@ -288,20 +369,17 @@ class ReportView(discord.ui.View):
                     return
             member_id = str(interaction.user.id)
             if member_id in self.pending or member_id in self.draft.members:
-                await interaction.response.send_message("Вы уже участвуете в этом МП.", ephemeral=True)
+                await interaction.followup.send("Вы уже участвуете в этом МП.", ephemeral=True)
                 return
             if len(self.pending) + len(self.draft.members) >= 100:
                 raise UserError("В этом отчёте уже записано 100 человек.")
-            self.draft.members.append(member_id)
-            try:
-                await interaction.response.edit_message(**self.payload())
-            except BaseException:
-                self.draft.members.remove(member_id)
-                self.needs_refresh = True
-                self.payload()
-                raise
+            await self.update_members(interaction, [*self.draft.members, member_id])
 
-    @discord.ui.button(label="Добавить из голосового", custom_id="voice", style=discord.ButtonStyle.secondary, row=2)
+    @join_row.button(label="Обновить", custom_id="refresh", style=discord.ButtonStyle.secondary)
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.show_page(interaction)
+
+    @join_row.button(label="Добавить из голосового", custom_id="voice", style=discord.ButtonStyle.secondary)
     async def choose_voice(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await self.validate(interaction)
@@ -333,11 +411,9 @@ class ReportView(discord.ui.View):
             self.draft.voice_channel_id = str(channel.id)
             try:
                 # Обновляем общий черновик через bot API, а не личное окно выбора канала.
-                await self.message.edit(**self.payload(members))
+                await self.edit_layout(self.message.edit, members)
             except BaseException:
                 self.draft.voice_channel_id = old_voice
-                self.payload()
-                self.needs_refresh = True
                 raise
             self.draft.members = members
             self.pending = [member for member in self.pending if member not in members]
@@ -347,36 +423,36 @@ class ReportView(discord.ui.View):
                     "Проверьте общий черновик и подтвердите отчёт, когда он готов.",
             view=None, allowed_mentions=discord.AllowedMentions.none())
 
-    @discord.ui.select(cls=discord.ui.UserSelect, custom_id="add", placeholder="Организатор: добавить участников", min_values=1, max_values=25, row=0)
+    @add_row.select(cls=discord.ui.UserSelect, custom_id="add", placeholder="Организатор: добавить участников", min_values=1, max_values=25)
     async def select_members(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         await self.dispatch("add", interaction, select.values)
 
-    @discord.ui.button(label="Подтвердить отчёт", custom_id="confirm", style=discord.ButtonStyle.success, disabled=True, row=1)
+    @confirm_row.button(label="Подтвердить отчёт", custom_id="confirm", style=discord.ButtonStyle.success, disabled=True)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.dispatch("confirm", interaction)
 
-    @discord.ui.button(label="Очистить состав", custom_id="clear", style=discord.ButtonStyle.secondary, row=1)
+    @confirm_row.button(label="Очистить состав", custom_id="clear", style=discord.ButtonStyle.secondary)
     async def clear(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.dispatch("clear", interaction)
 
-    @discord.ui.button(label="Отменить черновик", custom_id="discard", style=discord.ButtonStyle.danger, row=1)
+    @confirm_row.button(label="Отменить черновик", custom_id="discard", style=discord.ButtonStyle.danger)
     async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.dispatch("discard", interaction)
 
-    @discord.ui.button(label='Разрешить похожий отчёт', custom_id='allow_duplicate', style=discord.ButtonStyle.secondary, row=1)
+    @confirm_row.button(label='Разрешить похожий отчёт', custom_id='allow_duplicate', style=discord.ButtonStyle.secondary)
     async def allow_duplicate(self, interaction, button):
         await self.dispatch('allow_duplicate', interaction)
 
 
 
-    @discord.ui.select(custom_id="outcome", placeholder="Организатор: выбрать результат", row=3,
+    @outcome_row.select(custom_id="outcome", placeholder="Организатор: выбрать результат",
                        options=[discord.SelectOption(label="Победа", value="win"),
                                 discord.SelectOption(label="Без победы", value="no_win")])
     async def select_outcome(self, interaction: discord.Interaction, select: discord.ui.Select):
         await self.dispatch("outcome", interaction, select.values[0])
 
-    @discord.ui.select(cls=discord.ui.UserSelect, custom_id="mvp", placeholder="Организатор: выбрать MVP (очистить — без MVP)",
-                       min_values=0, max_values=1, row=4)
+    @mvp_row.select(cls=discord.ui.UserSelect, custom_id="mvp", placeholder="Организатор: выбрать MVP (очистить — без MVP)",
+                       min_values=0, max_values=1)
     async def select_mvp(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
         await self.dispatch("mvp", interaction, select.values)
 
