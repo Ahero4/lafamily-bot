@@ -13,7 +13,7 @@ from lafamily.confirmations import ConfirmAction
 from lafamily.errors import UserError
 from lafamily.permissions import require_access_async
 from lafamily.modules.events.time import MOSCOW, display_date, timestamp, week_range
-from lafamily.modules.prices.formatting import CATEGORIES
+from lafamily.modules.prices.categories import CATEGORIES
 from lafamily.modules.prices.parser import LIMITS, PRODUCTS
 
 STATES = {'prepared':'Подготовлена','approved':'Утверждена','paid':'Выплачена'}

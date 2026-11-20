@@ -4,10 +4,11 @@ from datetime import datetime
 import discord
 
 from lafamily.async_database import database_call
-from lafamily.delivery_failure import delivery_failure
+from lafamily.delivery_failure import delivery_failure, unreachable_recipient
 from lafamily.diagnostics import log_error
 from lafamily.modules.events.time import MOSCOW
 from .parser import LIMITS, price_dm_revision
+from .categories import ITEM_ORDER, grouped_price_text
 from .delivery_reports import send_admin_delivery_report
 
 
@@ -44,10 +45,12 @@ async def notify_maximum_prices(store, message, report):
             if best <= limits['base']:
                 near[item] = (best, places)
     alerts = await database_call(store, 'claim_price_alerts', str(message.guild.id), str(message.id), list(maxima), list(near))
+    blocked = set()
     grouped = {}
     for alert in alerts:
         grouped.setdefault((alert['item'], alert['threshold']), []).append(alert)
-    for (item, mode), users in grouped.items():
+    for item, mode in sorted(grouped, key=lambda key: ITEM_ORDER[key[0]]):
+        users = grouped[item, mode]
         price, places = (near if mode == 'near' else maxima)[item]
         bonus = bonus_price_text(report, item, price)
         reason = 'цена 95–100% от максимума!' if mode == 'near' else 'достигнут справочный максимум!'
@@ -55,28 +58,37 @@ async def notify_maximum_prices(store, message, report):
         # Ошибка одного получателя не должна останавливать рассылку остальным.
         for alert in users:
             user = alert['user_id']
+            if user in blocked:
+                await database_call(store, 'finish_price_delivery', alert['attempt_id'], 'failed', 'RecipientUnsubscribed')
+                continue
+            guild_id = str(message.guild.id)
+            if not await database_call(store, 'direct_price_alert_active', guild_id, alert):
+                continue
             sending = False
+            stage = 'Проверка получателя'
             state, error_type, failure = 'sent', None, None
             try:
                 # Кэш без Members Intent может содержать прежние роли участника.
                 member = await message.guild.fetch_member(int(user))
+                stage = 'Проверка доступа к каналу цен'
                 if not message.channel.permissions_for(member).view_channel:
                     state, error_type = 'forbidden', 'ChannelAccessDenied'
                 else:
-                    sending = True
+                    if not await database_call(store, 'direct_price_alert_active', guild_id, alert):
+                        continue
                     sent_at = datetime.now(MOSCOW).strftime('**%H:%M** %d.%m.%Y МСК')
-                    content = (f'🏆 **{item}: ${price}{bonus}** — {reason} '
-                               f'Скупщик: **{places}**.\n'
-                               f'Отправлено: {sent_at}.\n'
+                    line = f'🏆 **{item}: ${price}{bonus}** — {reason} Скупщик: **{places}**.'
+                    content = (grouped_price_text({item: line}) + f'\nОтправлено: {sent_at}.\n'
                                f'https://discord.com/channels/{message.guild.id}/{message.channel.id}/{message.id}')
+                    stage = 'Отправка ЛС'
+                    sending = True
                     await member.send(
                         content=content,
                         allowed_mentions=discord.AllowedMentions.none())
             except Exception as error:
                 # Включая закрытые DM, уход с сервера, HTTP- и сетевые ошибки.
-                # Публичного запасного уведомления нет; подписка сохраняется.
                 error_type = type(error).__name__
-                failure = delivery_failure(error, 'Отправка ЛС' if sending else 'Проверка получателя')
+                failure = delivery_failure(error, stage)
                 if isinstance(error, discord.Forbidden):
                     state = 'forbidden'
                 elif isinstance(error, discord.NotFound):
@@ -86,6 +98,12 @@ async def notify_maximum_prices(store, message, report):
                 else:
                     state = 'failed'
                 log_error('Не удалось доставить личное уведомление о цене; автоповтор отключён', error)
+                if unreachable_recipient(error, stage):
+                    removed = await database_call(store, 'finish_unreachable_price_recipient', guild_id, user,
+                                                  [alert['attempt_id']], state, error_type, failure)
+                    if removed:
+                        blocked.add(user)
+                    continue
             # Ошибка записи в журнал не считается ошибкой доставки.
             await database_call(store, 'finish_price_delivery', alert['attempt_id'], state, error_type, failure)
     if alerts:

@@ -2,6 +2,7 @@
 import json
 from datetime import UTC,datetime,timedelta
 from lafamily.modules.events.time import timestamp
+from lafamily.modules.prices.categories import grouped_price_items, grouped_price_text
 
 
 class JobsStore:
@@ -39,10 +40,12 @@ class JobsStore:
     def _queue_claimed_price_alerts(self, guild_id, source_id, alerts, *, revision, channel_id, lines):
         users = {}
         for alert in alerts:
-            users.setdefault(alert['user_id'], []).append(alert)
+            users.setdefault(alert['user_id'], {})[alert['item']] = alert
         for user_id, items in users.items():
             body, attempts = [], []
-            for alert in items:
+            # Порядок должен сохраняться и между частями длинного сообщения.
+            ordered = [alert for _, group in grouped_price_items(items) for alert in group]
+            for alert in ordered:
                 line = lines[alert['item']][alert['threshold']]
                 if len(line) > 1650:
                     raise ValueError('Строка уведомления превышает лимит ЛС')
@@ -89,20 +92,24 @@ class JobsStore:
     def price_job_body(self, job):
         """Перепроверить подписки непосредственно перед сетевой отправкой."""
         with self.transaction():
+            if not self._prepare_price_job(job):
+                return ''
             modes = self.price_subscription_modes(job['guild_id'], job['user_id'])
-            body = []
+            lines = {}
             for attempt_id, line in zip(job['attempt_ids'], job['body'].splitlines(), strict=True):
-                attempt = self.db.execute('SELECT item,threshold FROM price_delivery_attempts WHERE id=?',
+                attempt = self.db.execute("SELECT item,threshold FROM price_delivery_attempts WHERE id=? AND state='pending'",
                                           (attempt_id,)).fetchone()
                 if attempt and modes.get(attempt['item']) == attempt['threshold']:
-                    body.append(line)
+                    lines[attempt['item']] = line
                 else:
                     self.finish_price_delivery(attempt_id, 'failed', 'SubscriptionChanged')
-            return '\n'.join(body)
+            return grouped_price_text(lines)
 
     def defer_price_job(self,number,error_type):
-        self.db.execute("UPDATE delivery_jobs SET state='queued',ready_at=?,error_type=? WHERE id=?",
-            (timestamp(datetime.now(UTC)+timedelta(seconds=30)),error_type,number))
+        with self.transaction():
+            if self._price_job_can_send(number):
+                self.db.execute("UPDATE delivery_jobs SET state='queued',ready_at=?,error_type=? WHERE id=?",
+                    (timestamp(datetime.now(UTC)+timedelta(seconds=30)),error_type,number))
 
     def recover_price_jobs(self,guild_id):
         for row in self.db.execute("SELECT id FROM delivery_jobs WHERE guild_id=? AND state='sending'",(guild_id,)).fetchall():
@@ -110,12 +117,30 @@ class JobsStore:
         self.db.execute("UPDATE price_delivery_runs SET admin_state='uncertain' "
                         "WHERE guild_id=? AND admin_state='sending'", (guild_id,))
 
-    def current_price_job(self,job):
+    def _price_job_can_send(self, number):
+        row = self.db.execute("SELECT error_type FROM delivery_jobs WHERE id=? AND state='sending'", (number,)).fetchone()
+        if not row:
+            return False
+        if row['error_type'] == 'RecipientUnsubscribed':
+            self._finish_price_job(number, 'failed', 'RecipientUnsubscribed')
+            return False
+        return True
+
+    def prepare_price_job(self, job):
+        with self.transaction():
+            return self._prepare_price_job(job)
+
+    def _prepare_price_job(self, job):
+        if not self._price_job_can_send(job['id']):
+            return False
         current=self.db.execute('SELECT * FROM price_dm_current WHERE guild_id=?',(job['guild_id'],)).fetchone()
         settings = self.price_settings(job['guild_id'])
-        return bool(current and current['source_id']==job['source_id'] and current['revision']==job['revision']
-                    and settings and settings['channel_id'] == job['channel_id']
-                    and timestamp(datetime.now(UTC)-timedelta(hours=1))<=job['created_at'])
+        if (current and current['source_id']==job['source_id'] and current['revision']==job['revision']
+                and settings and settings['channel_id'] == job['channel_id']
+                and timestamp(datetime.now(UTC)-timedelta(hours=1))<=job['created_at']):
+            return True
+        self._finish_price_job(job['id'], 'failed', 'ExpiredPrice')
+        return False
 
     def price_job_run(self,number):
         row=self.db.execute('SELECT attempt_ids FROM delivery_jobs WHERE id=?',(number,)).fetchone()

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from lafamily.database import Store
-from lafamily.modules.prices.parser import parse_prices
+from lafamily.modules.prices.parser import Price, parse_prices
 from lafamily.modules.prices.notifications import bonus_price_text, notify_maximum_prices
 
 EXAMPLE=Path(__file__).with_name('fixtures').joinpath('prices_example.txt').read_text(encoding='utf-8-sig')
@@ -26,12 +26,33 @@ class NotificationBonusTests(unittest.IsolatedAsyncioTestCase):
         await notify_maximum_prices(store,message,report)
         self.assertEqual(dm.send.await_count,2)
         for call in dm.send.call_args_list:
+            self.assertTrue(call.kwargs['content'].startswith('**Горщик**\n'))
             self.assertIn('Медь: $60 ($72)',call.kwargs['content'])
             self.assertNotIn('+20%',call.kwargs['content'])
             self.assertIn('Скупщик: **№',call.kwargs['content'])
         message.id=101
         await notify_maximum_prices(store,message,report)
         self.assertEqual(dm.send.await_count,2)
+
+    async def test_direct_alerts_in_public_order_with_mixed_thresholds(self):
+        store = Store(':memory:')
+        self.addCleanup(store.close)
+        # В базе первым оказался продукт; порядок доставки определяет публичная карточка.
+        store.set_price_subscription('1', '123', 'Капуста', True)
+        store.replace_price_subscriptions('1', '123', ['Капуста', 'Шкура'],
+                                          {'Капуста':'near', 'Шкура':'max'})
+        report = parse_prices(EXAMPLE)
+        report.buyers[1]['Шкура'] = Price('Шкура', 1100, 1320)
+        report.products['Капуста'] = Price('Капуста', 748, None)
+        send = AsyncMock()
+        guild = SimpleNamespace(id=1, fetch_member=AsyncMock(return_value=SimpleNamespace(send=send)))
+        message = SimpleNamespace(id=100, guild=guild, channel=SimpleNamespace(id=2,
+            permissions_for=lambda member: SimpleNamespace(view_channel=True)))
+        await notify_maximum_prices(store, message, report)
+        contents = [call.kwargs['content'] for call in send.await_args_list]
+        self.assertEqual([content.splitlines()[0] for content in contents], ['**Охота**', '**Скупщик продуктов**'])
+        self.assertIn('достигнут справочный максимум', contents[0])
+        self.assertIn('95–100%', contents[1])
 
     def test_source_rounding_not_recalculated(self):
         report=parse_prices(EXAMPLE.replace('- Алмаз: $2903 ($3483)','- Алмаз: $3997 ($4796)'))

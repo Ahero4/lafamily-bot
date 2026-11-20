@@ -88,7 +88,10 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
         await notify_maximum_prices(self.store, self.message, self.report)
         row = self.data()['daily'][0]
         self.assertEqual((row['delivered'], row['sent'], row['failed'], row['uncertain']), (0,0,2,1))
-        self.assertEqual({a['error_type'] for a in self.data()['attempts']}, {'Forbidden','OSError'})
+        self.assertEqual({a['error_type'] for a in self.data()['attempts']}, {'Forbidden', 'RecipientUnsubscribed', 'OSError'})
+        self.members[123].send.assert_awaited_once()
+        self.assertEqual(self.store.price_subscriptions('1', '123'), [])
+        self.assertEqual(self.store.price_subscriptions('1', '456'), ['Медь'])
         self.assertEqual({a['admin_state'] for a in self.data()['attempts']}, {'sent'})
         reason = next(a['error_reason'] for a in self.data()['attempts'] if a['error_type'] == 'Forbidden')
         self.assertIn('50007', reason)
@@ -105,6 +108,14 @@ class DeliveryReportTests(unittest.IsolatedAsyncioTestCase):
         self.interaction.permissions.administrator = True
         await self.command('скупщик статистика')(self.interaction)
         self.assertIn(reason, self.interaction.edit_original_response.await_args.kwargs['content'])
+
+    async def test_group_prefers_discord_failure_over_filtered_item(self):
+        alerts = [a for a in self.store.claim_price_alerts('1', '100', ['Медь', 'Капуста']) if a['user_id']=='123']
+        job = self.store.enqueue_price_job('1','100','revision','123','2','one\ntwo',
+                                           [a['attempt_id'] for a in alerts])
+        self.store.finish_price_delivery(alerts[0]['attempt_id'], 'failed', 'SubscriptionChanged')
+        self.store.finish_price_job(job, 'forbidden', 'Forbidden', 'Discord 50007')
+        self.assertEqual(self.store.price_delivery_reasons('1', alerts[0]['run_id']), [('Discord 50007', 1)])
 
     async def test_group_with_one_sent_item_counts_as_a_successful_dm(self):
         alerts = self.store.claim_price_alerts('1', '100', ['Медь', 'Капуста'])

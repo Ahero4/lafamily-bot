@@ -1,9 +1,12 @@
 """Очередь цен сохраняет сигналы при сбоях и учитывает актуальные подписки."""
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import discord
 
 from lafamily.database import Store
 from lafamily.modules.prices.parser import LIMITS, Price, parse_prices, price_dm_revision
@@ -33,6 +36,93 @@ class PriceQueueRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.message.id = source
         self.store.activate_price_dm_revision('1', str(source), price_dm_revision(self.report))
         await enqueue_notifications(self.store, self.message, self.report)
+
+    async def test_missing_member_cancels_claimed_and_queued_jobs_and_can_resubscribe(self):
+        self.store.set_price_subscription('2', '123', 'Медь', True)
+        self.store.set_price_subscription('1', '456', 'Медь', True)
+        guild_id, source, revision, user = '1', '100', 'test', '123'
+        self.store.set_price_subscription(guild_id, user, 'Золото', True)
+        self.store.activate_price_dm_revision(guild_id, source, revision)
+        alerts = self.store.claim_price_alerts(guild_id, source, ['Медь', 'Капуста', 'Золото'])
+        for alert in sorted(alerts, key=lambda entry: entry['user_id']):
+            self.store.enqueue_price_job(guild_id, source, revision, alert['user_id'], '2', alert['item'], [alert['attempt_id']])
+        first = self.store.claim_price_job(guild_id)
+        already_claimed = self.store.claim_price_job(guild_id)
+        self.guild.fetch_member.side_effect = discord.NotFound(SimpleNamespace(status=404, reason='missing'), {'code':10007})
+        await self.queue.deliver(first)
+        self.assertEqual(self.store.price_subscriptions(guild_id, user), [])
+        self.assertEqual(self.store.price_subscriptions('2', user), ['Медь'])
+        self.assertEqual(self.store.price_subscriptions(guild_id, '456'), ['Медь'])
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM delivery_jobs WHERE user_id=? AND state='queued'",
+                                              (user,)).fetchone()[0], 0)
+        self.assertEqual(self.store.db.execute("SELECT state FROM delivery_jobs WHERE id=?",
+                                              (already_claimed['id'],)).fetchone()[0], 'sending')
+        self.guild.fetch_member.side_effect = None
+        self.store.set_price_subscription(guild_id, user, 'Медь', True)
+        await self.queue.deliver(first)
+        await self.queue.deliver(already_claimed)
+        self.member.send.assert_not_awaited()
+        await self.queue.deliver(self.store.claim_price_job(guild_id))
+        self.member.send.assert_awaited_once()
+        self.assertEqual(self.store.price_subscriptions(guild_id, user), ['Медь'])
+        await self.enqueue(101)
+        await self.queue.deliver(self.store.claim_price_job(guild_id))
+        self.assertEqual(self.member.send.await_count, 2)
+
+    async def test_concurrent_send_keeps_actual_success_and_unrelated_pending_history(self):
+        old = self.store.claim_price_alerts('1', '98', ['Медь'])[0]
+        self.store.claim_price_alerts('1', '99', [])
+        self.store.activate_price_dm_revision('1', '100', 'concurrent')
+        alerts = self.store.claim_price_alerts('1', '100', ['Медь', 'Капуста'])
+        for alert in alerts:
+            self.store.enqueue_price_job('1', '100', 'concurrent', '123', '2', alert['item'], [alert['attempt_id']])
+        first, second = self.store.claim_price_job('1'), self.store.claim_price_job('1')
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def send(**kwargs):
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+                return
+            raise discord.Forbidden(SimpleNamespace(status=403, reason='closed'), {'code':50007})
+        self.member.send.side_effect = send
+        dispatch = asyncio.create_task(self.queue.deliver(first))
+        try:
+            await entered.wait()
+            await self.queue.deliver(second)
+        finally:
+            release.set()
+            await dispatch
+        self.assertEqual(self.store.price_subscriptions('1', '123'), [])
+        states = [row[0] for row in self.store.db.execute('SELECT state FROM delivery_jobs ORDER BY id')]
+        self.assertEqual(states, ['sent', 'forbidden'])
+        self.assertEqual(self.store.db.execute('SELECT state FROM price_delivery_attempts WHERE id=?',
+                                              (old['attempt_id'],)).fetchone()[0], 'pending')
+
+    async def test_definitive_dm_error_during_resubscription_preserves_new_selection(self):
+        await self.enqueue()
+        async def resubscribe_then_reject(**kwargs):
+            self.store.replace_price_subscriptions('1', '123', [])
+            self.store.replace_price_subscriptions('1', '123', ['Медь', 'Капуста'])
+            raise discord.Forbidden(SimpleNamespace(status=403, reason='closed'), {'code':50007})
+        self.member.send.side_effect = resubscribe_then_reject
+        await self.queue.drain()
+        self.assertEqual(self.store.price_subscriptions('1', '123'), ['Капуста', 'Медь'])
+        attempts = self.store.price_delivery_data('1', '2000', '2100', True)['attempts']
+        self.assertTrue(all('50007' in a['error_reason'] and 'отключены' not in a['error_reason'] for a in attempts))
+
+    async def test_wrong_discord_code_or_operation_preserves_selection(self):
+        for index, (location, error, status, code) in enumerate((
+                ('fetch_channel', discord.NotFound, 404, 10007),
+                ('fetch_member', discord.NotFound, 404, 10003),
+                ('send', discord.Forbidden, 403, 50013))):
+            self.store.claim_price_alerts('1', str(100 + index), [])
+            await self.enqueue(100 + index)
+            where = {'fetch_channel': self.client.fetch_channel, 'fetch_member': self.guild.fetch_member,
+                     'send': self.member.send}[location]
+            where.side_effect = error(SimpleNamespace(status=status, reason='error'), {'code':code})
+            await self.queue.deliver(self.store.claim_price_job('1'))
+            where.side_effect = None
+            self.assertEqual(self.store.price_subscriptions('1', '123'), ['Капуста', 'Медь'])
 
     async def test_queue_failure_rolls_back_flags_and_all_recipient_jobs(self):
         self.store.set_price_subscription('1', '456', 'Медь', True)
@@ -87,8 +177,10 @@ class PriceQueueRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.guild.fetch_member.side_effect = fetch_member
         await self.queue.drain()
         content = self.member.send.call_args.kwargs['content']
+        self.assertTrue(content.startswith('**Скупщик продуктов**\n'))
         self.assertIn('Капуста', content)
         self.assertNotIn('Медь', content)
+        self.assertNotIn('**Горщик**', content)
         self.assertEqual(self.store.price_delivery_summary('1', 1)['sent'], 1)
         self.assertEqual(self.store.price_delivery_data('1', '2000', '2100')['daily'][0]['sent'], 1)
 
@@ -132,8 +224,24 @@ class PriceQueueRecoveryTests(unittest.IsolatedAsyncioTestCase):
         contents = [call.kwargs['content'] for call in self.member.send.call_args_list]
         self.assertGreater(len(contents), 1)
         self.assertTrue(all(len(content) <= 2000 for content in contents))
-        for item in LIMITS:
-            self.assertEqual(sum(f'**{item}:' in content for content in contents), 1)
+        expected = {
+            'Охота': ['Шкура', 'Идеальное мясо', 'Хорошее мясо'],
+            'Горщик': ['Медь', 'Изумруд', 'Рубин', 'Алмаз'],
+            'Рыбалка': ['Окунь', 'Карп', 'Форель', 'Лосось'],
+            'Нефтекачка': ['Бензин', 'Солярка', 'Керосин'],
+            'Остальное': ['Фальшивые деньги', 'Жемчуг'],
+            'Скупщик продуктов': ['Капуста', 'Тыква', 'Мандарины', 'Ананасы'],
+        }
+        shown = []
+        for content in contents:
+            body = content.split('\nОтправлено:', 1)[0]
+            for section in body.split('\n\n'):
+                title, *lines = section.splitlines()
+                self.assertTrue(lines)
+                for line in lines:
+                    name = line.split('**', 2)[1].split(':', 1)[0]
+                    shown.append((title, name))
+        self.assertEqual(shown, [(f'**{title}**', name) for title, names in expected.items() for name in names])
 
     async def test_legacy_full_message_preserves_all_items_within_discord_limit(self):
         guild_id, channel_id, source_id = '1' * 20, '2' * 20, '3' * 20
@@ -155,6 +263,8 @@ class PriceQueueRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.member.send.assert_awaited_once()
         content = self.member.send.call_args.kwargs['content']
         self.assertLessEqual(len(content), 2000)
+        self.assertTrue(content.startswith('**Охота**\n'))
+        self.assertIn('**Остальное**\n', content)
         for item in items:
             self.assertIn(f'**{item}:', content)
 

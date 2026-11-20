@@ -5,6 +5,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 
 from lafamily.errors import UserError
 from lafamily.modules.events.models import Draft
@@ -438,7 +439,8 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
         if modes is not None and (set(modes) != selected or any(v not in ('max', 'near') for v in modes.values())):
             raise UserError('Неверный режим уведомлений.')
         with self.transaction():
-            for old in self.price_subscriptions(guild_id, user_id):
+            previous = self.price_subscription_modes(guild_id, user_id)
+            for old in previous:
                 if old not in selected:
                     self.db.execute("DELETE FROM price_subscriptions WHERE guild_id=? AND user_id=? AND item=?",
                                     (guild_id, user_id, old))
@@ -449,19 +451,26 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
                     # Смена порога начинает новый цикл только для изменённого товара.
                     self.db.execute("UPDATE price_subscriptions SET threshold=?, notified=0, notified_attempt_id=NULL WHERE guild_id=? AND user_id=? AND item=? AND threshold<>?",
                                     (modes[item], guild_id, user_id, item, modes[item]))
+            if previous != self.price_subscription_modes(guild_id, user_id):
+                self._renew_price_selection(guild_id, user_id)
         return self.price_subscriptions(guild_id, user_id)
+
+    def _renew_price_selection(self, guild_id, user_id):
+        self.db.execute('UPDATE price_subscriptions SET selection_id=? WHERE guild_id=? AND user_id=?',
+                        (uuid4().hex, guild_id, user_id))
 
     def set_price_subscription(self, guild_id: str, user_id: str, item: str, enabled: bool):
         # Повторное включение сохраняет флаг уведомления, чтобы не получить лишний тег.
-        if enabled:
-            self.db.execute("INSERT OR IGNORE INTO price_subscriptions(guild_id, user_id, item, notified) VALUES (?, ?, ?, 0)",
-                            (guild_id, user_id, item))
-        else:
-            self.db.execute("DELETE FROM price_subscriptions WHERE guild_id=? AND user_id=? AND item=?",
-                            (guild_id, user_id, item))
-        return [row['item'] for row in self.db.execute(
-            "SELECT item FROM price_subscriptions WHERE guild_id=? AND user_id=? ORDER BY item",
-            (guild_id, user_id))]
+        with self.transaction():
+            if enabled:
+                changed = self.db.execute("INSERT OR IGNORE INTO price_subscriptions(guild_id,user_id,item,notified) VALUES (?,?,?,0)",
+                                          (guild_id, user_id, item))
+            else:
+                changed = self.db.execute("DELETE FROM price_subscriptions WHERE guild_id=? AND user_id=? AND item=?",
+                                          (guild_id, user_id, item))
+            if changed.rowcount:
+                self._renew_price_selection(guild_id, user_id)
+        return self.price_subscriptions(guild_id, user_id)
 
     def claim_price_alerts(self, guild_id: str, source_id: str, maximum_items: list[str], near_items=None,
                            *, include_existing_matches=False, queue_payload=None):
@@ -486,7 +495,8 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
             for row in subscriptions:
                 matches_threshold = row['item'] in ((near_items or []) if row['threshold'] == 'near' else maximum_items)
                 if matches_threshold and (include_existing_matches or not row['notified']):
-                    alerts.append({'user_id': row['user_id'], 'item': row['item'], 'threshold': row['threshold']})
+                    alerts.append({'user_id': row['user_id'], 'item': row['item'], 'threshold': row['threshold'],
+                                   'selection_id': row['selection_id']})
                     if not row['notified']:
                         new_recipients.add(row['user_id'])
                         new_signals.add((row['user_id'], row['item']))

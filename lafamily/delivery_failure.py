@@ -5,6 +5,7 @@ import discord
 KNOWN_REASONS = {
     'ChannelAccessDenied': 'У получателя нет доступа к каналу цен.',
     'ExpiredPrice': 'Цена устарела до отправки.',
+    'RecipientUnsubscribed': 'Отправка отменена после отключения подписок недоступного получателя.',
     'SubscriptionChanged': 'Подписка изменилась до отправки.',
     'ProcessInterrupted': 'Бот перезапустился во время отправки. Доставка не подтверждена.',
     'Forbidden': 'Discord запретил операцию.',
@@ -20,6 +21,13 @@ def stored_reason(error_type, state):
     if state == 'uncertain':
         return 'Доставка не подтверждена.'
     return 'Причина не уточнена.'
+
+
+def unreachable_recipient(error, stage):
+    if not isinstance(error, discord.HTTPException):
+        return False
+    return ((stage == 'Отправка ЛС' and error.status == 403 and error.code == 50007)
+            or (stage == 'Проверка получателя' and error.status == 404 and error.code == 10007))
 
 
 def delivery_failure(error, stage):

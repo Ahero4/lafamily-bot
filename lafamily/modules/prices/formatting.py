@@ -2,16 +2,9 @@
 
 RENDER_VERSION = 4
 import discord
+from .categories import MATERIAL_CATEGORIES, PRODUCT_CATEGORY
 from .parser import LIMITS, MATERIALS, PRODUCTS
 
-
-# Порядок категорий и товаров влияет только на отображение, расчёты цен остаются общими.
-CATEGORIES = (
-    ('Охота', ('Шкура', 'Идеальное мясо', 'Хорошее мясо')),
-    ('Горщик', ('Медь', 'Изумруд', 'Рубин', 'Алмаз')),
-    ('Рыбалка', ('Окунь', 'Карп', 'Форель', 'Лосось')),
-    ('Нефтекачка', ('Бензин', 'Солярка', 'Керосин')),
-)
 
 
 
@@ -54,17 +47,14 @@ def render_prices(report):
     view = discord.ui.LayoutView(timeout=None)
     blocks = []
     for buyer in (1, 2, 3):
-        # Нераспределённые товары автоматически попадают в «Остальное».
-        assigned = {name for _, names in CATEGORIES for name in names}
-        categories = (*CATEGORIES, ('Остальное', tuple(name for name in MATERIALS if name not in assigned)))
         sections = []
-        for title, names in categories:
+        for title, names in MATERIAL_CATEGORIES:
             if not names:
                 continue
             lines = [f'• {name}: {formatted_price(report.buyers[buyer][name], best_base[name], best_bonus[name])}' for name in names]
             sections.append(f'**{title}**\n' + '\n'.join(lines))
         blocks.append((f'Скупщик сырья №{buyer}', '\n\n'.join(sections)))
-    blocks.append(('Скупщик продуктов', '\n'.join(
+    blocks.append((PRODUCT_CATEGORY, '\n'.join(
         f'• {name}: {formatted_price(report.products[name])}' for name in PRODUCTS)))
     header = '**🔔 Цены у скупщиков — сравнение**'
     if report.stamp:

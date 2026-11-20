@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import discord
 from discord.ext import tasks
 from lafamily.async_database import database_call
-from lafamily.delivery_failure import delivery_failure
+from lafamily.delivery_failure import delivery_failure, unreachable_recipient
 from lafamily.diagnostics import log_error
 from lafamily.modules.events.time import MOSCOW
 from .parser import LIMITS, price_dm_revision
@@ -90,8 +90,8 @@ class PriceQueue:
                 except Exception as error:log_error('Не завершён отчёт очереди ЛС',error)
 
     async def deliver(self,job):
-        if not await database_call(self.store,'current_price_job',job):
-            await database_call(self.store,'finish_price_job',job['id'],'failed','ExpiredPrice');return
+        if not await database_call(self.store, 'prepare_price_job', job):
+            return
         sending = False
         message = None
         state,error_type,failure='sent',None,None
@@ -101,12 +101,11 @@ class PriceQueue:
             if str(channel.guild.id)!=job['guild_id']:raise ValueError('GuildMismatch')
             stage = 'Проверка получателя'
             member=await channel.guild.fetch_member(int(job['user_id']))
+            stage = 'Проверка доступа к каналу цен'
             if not channel.permissions_for(member).view_channel:
                 state,error_type='forbidden','ChannelAccessDenied'
             else:
                 stage = 'Подготовка сообщения'
-                if not await database_call(self.store,'current_price_job',job):
-                    await database_call(self.store,'finish_price_job',job['id'],'failed','ExpiredPrice');return
                 body = await database_call(self.store, 'price_job_body', job)
                 if not body:
                     await database_call(self.store, 'finish_price_job', job['id'], 'failed', 'SubscriptionChanged')
@@ -138,6 +137,10 @@ class PriceQueue:
             elif sending and (not isinstance(error,discord.HTTPException) or error.status>=500):state='uncertain'
             else:state='failed'
             log_error('Ошибка доставки ЛС из очереди',error)
+            if unreachable_recipient(error, stage):
+                await database_call(self.store, 'finish_unreachable_price_recipient', job['guild_id'], job['user_id'],
+                                    job['attempt_ids'], state, error_type, failure, job_id=job['id'])
+                return
         await database_call(self.store,'finish_price_job',job['id'],state,error_type,failure)
         if message:
             run=await database_call(self.store,'price_job_run',job['id'])

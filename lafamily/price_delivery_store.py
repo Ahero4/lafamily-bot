@@ -1,5 +1,6 @@
 """Журнал доставки ЛС скупщика; методы вызываются в потоке DatabaseWorker."""
 from datetime import UTC, datetime, timedelta
+import json
 import logging
 
 from lafamily.delivery_failure import stored_reason
@@ -24,6 +25,10 @@ class PriceDeliveryStore:
             CREATE INDEX IF NOT EXISTS price_delivery_period ON price_delivery_runs(guild_id,created_at);
         """)
 
+        if 'selection_id' not in {row['name'] for row in self.db.execute('PRAGMA table_info(price_subscriptions)')}:
+            self.db.execute("ALTER TABLE price_subscriptions ADD COLUMN selection_id TEXT NOT NULL DEFAULT ''")
+        if 'selection_id' not in {row['name'] for row in self.db.execute('PRAGMA table_info(price_delivery_attempts)')}:
+            self.db.execute('ALTER TABLE price_delivery_attempts ADD COLUMN selection_id TEXT')
         if 'error_reason' not in {row['name'] for row in self.db.execute('PRAGMA table_info(price_delivery_attempts)')}:
             self.db.execute('ALTER TABLE price_delivery_attempts ADD COLUMN error_reason TEXT')
 
@@ -85,10 +90,51 @@ class PriceDeliveryStore:
             (guild_id, channel['channel_id'] if channel else '', source_id, timestamp(), count)).lastrowid
         for alert in alerts:
             attempt_id = self.db.execute('INSERT INTO price_delivery_attempts '
-                '(run_id,user_id,item,threshold) VALUES (?,?,?,?)',
-                (run_id, alert['user_id'], alert['item'], alert['threshold'])).lastrowid
+                '(run_id,user_id,item,threshold,selection_id) VALUES (?,?,?,?,?)',
+                (run_id, alert['user_id'], alert['item'], alert['threshold'], alert['selection_id'])).lastrowid
             alert.update(run_id=run_id, attempt_id=attempt_id)
         return alerts
+
+    def direct_price_alert_active(self, guild_id, alert):
+        pending = self.db.execute("""SELECT s.threshold,s.selection_id FROM price_delivery_attempts a
+            JOIN price_delivery_runs r ON r.id=a.run_id
+            LEFT JOIN price_subscriptions s ON s.guild_id=r.guild_id AND s.user_id=a.user_id AND s.item=a.item
+            WHERE r.guild_id=? AND r.id=? AND a.id=? AND a.user_id=? AND a.state='pending'""",
+            (guild_id, alert['run_id'], alert['attempt_id'], alert['user_id'])).fetchone()
+        if pending and (pending['threshold'] != alert['threshold'] or pending['selection_id'] != alert['selection_id']):
+            self.finish_price_delivery(alert['attempt_id'], 'failed', 'SubscriptionChanged')
+            return False
+        return pending is not None
+
+    def finish_unreachable_price_recipient(self, guild_id, user_id, attempts, state, error_type, reason, *, job_id=None):
+        """Решение об отключении и завершение попыток сохраняются вместе."""
+        with self.transaction():
+            # Только актуальное поколение подписок и ещё открытая попытка дают право удалить выбор.
+            current = self.db.execute("""SELECT 1 FROM price_delivery_attempts a
+                JOIN price_delivery_runs r ON r.id=a.run_id
+                JOIN price_subscriptions s ON s.guild_id=r.guild_id AND s.user_id=a.user_id
+                    AND s.item=a.item AND s.selection_id=a.selection_id
+                WHERE r.guild_id=? AND a.user_id=? AND a.state='pending'
+                    AND a.id IN (SELECT value FROM json_each(?)) LIMIT 1""",
+                (guild_id, user_id, json.dumps(attempts))).fetchone()
+            if current:
+                reason += ' Подписки на цены отключены.'
+            if job_id is None:
+                self.finish_price_delivery(attempts[0], state, error_type, reason)
+            else:
+                self._finish_price_job(job_id, state, error_type, reason)
+            if not current:
+                return False
+            self.db.execute('DELETE FROM price_subscriptions WHERE guild_id=? AND user_id=?', (guild_id, user_id))
+            jobs = self.db.execute("""SELECT id FROM delivery_jobs WHERE guild_id=? AND user_id=?
+                AND state='queued'""", (guild_id, user_id)).fetchall()
+            for job in jobs:
+                self._finish_price_job(job['id'], 'failed', 'RecipientUnsubscribed')
+            # У взятой задачи запрос может уже выполняться. Остановить можно только до send;
+            # если запрос уже ушёл, обработчик запишет фактический результат.
+            self.db.execute("""UPDATE delivery_jobs SET error_type='RecipientUnsubscribed'
+                WHERE guild_id=? AND user_id=? AND state='sending'""", (guild_id, user_id))
+            return True
 
     def finish_price_delivery(self, attempt_id, state, error_type=None, error_reason=None):
         if state not in {'sent', 'forbidden', 'not_found', 'failed', 'uncertain'}:
@@ -131,6 +177,7 @@ class PriceDeliveryStore:
             SELECT a.error_reason, a.error_type, a.state, ROW_NUMBER() OVER (
                 PARTITION BY a.run_id, COALESCE(a.message_group,'attempt-'||a.id)
                 ORDER BY CASE a.state WHEN 'pending' THEN 0 WHEN 'uncertain' THEN 1 WHEN 'sent' THEN 2 ELSE 3 END,
+                         CASE WHEN a.error_type IN ('SubscriptionChanged','RecipientUnsubscribed') THEN 1 ELSE 0 END,
                          a.state, a.id) AS priority
             FROM price_delivery_attempts a JOIN price_delivery_runs r ON r.id=a.run_id
             WHERE r.guild_id=? AND {condition})
