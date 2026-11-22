@@ -74,6 +74,38 @@ def history_graph(item, rows):
     return discord.File(BytesIO(svg.encode()),filename='prices.svg')
 
 
+def _history_text(value, limit):
+    text = discord.utils.escape_markdown(' '.join(value.split()), ignore_links=False)
+    text = discord.utils.escape_mentions(text)
+    # У эмодзи вне BMP два кодовых элемента в лимите Discord.
+    encoded = text.encode('utf-16-le')
+    if len(encoded) <= 2 * limit:
+        return text
+    return encoded[:2 * (limit - 1)].decode('utf-16-le', errors='ignore').rstrip('\\') + '…'
+
+
+def _history_entry(row):
+    cancelled = bool(row['cancelled_at'])
+    total = '0 · отменён' if cancelled else f'+{row["awarded"]}'
+    lines = [f'**{total}** · {_history_text(row["type_name"], 80)}',
+             f'-# Отчёт #{row["id"]} · {display_date(row["occurred_at"])} МСК']
+    bonuses = []
+    if row['win_bonus']:
+        bonuses.append(f'победа +{row["win_bonus"]}')
+    if row['mvp_points']:
+        bonuses.append(f'MVP +{row["mvp_points"]}')
+    if bonuses:
+        base_label = 'До отмены: база' if cancelled else 'База'
+        lines.append(' · '.join([f'{base_label} {row["base_points"]}', *bonuses]))
+    elif cancelled:
+        lines.append(f'До отмены: {row["awarded"]}')
+    if cancelled:
+        reason = _history_text(row['cancel_reason'] or 'без указания причины', 100)
+        actor = f' · <@{row["cancelled_by"]}>' if row['cancelled_by'] else ''
+        lines.append(f'Причина: {reason}{actor}')
+    return '\n'.join(lines)
+
+
 def register_insights(tree, client, store, guild_id):
     points = command_group(tree,guild_id,'баллы','Баллы семьи')
     prices = command_group(tree,guild_id,'скупщик','Цены и подписки')
@@ -86,14 +118,9 @@ def register_insights(tree, client, store, guild_id):
     async def history(interaction: discord.Interaction,page:app_commands.Range[int,1,10000]=1):
         await interaction.response.defer(ephemeral=True, thinking=True)
         rows = await database_call(store,'points_history',str(interaction.guild_id),str(interaction.user.id),(page-1)*5,5)
-        lines = []
-        for r in rows:
-            status = f'Отменён: {discord.utils.escape_markdown(r["cancel_reason"] or "без причины")[:100]}' if r['cancelled_at'] else f'+{r["awarded"]} балл.'
-            if r['cancelled_at'] and r['cancelled_by']:status+=f' · <@{r["cancelled_by"]}>'
-            lines.append(f'**{discord.utils.escape_markdown(r["type_name"])[:80]}** · отчёт #{r["id"]}\n'
-                         f'{display_date(r["occurred_at"])} МСК · {status}\n'
-                         f'Базовые баллы: {r["base_points"]} · За победу: {r["win_bonus"]} · MVP: {r["mvp_points"]}')
-        await interaction.edit_original_response(content=f'**История баллов • страница {page}**\n'+('\n\n'.join(lines) or 'Записей нет.'),allowed_mentions=discord.AllowedMentions.none())
+        entries = '\n\n'.join(_history_entry(row) for row in rows) or 'Записей нет.'
+        await interaction.edit_original_response(content=f'**История баллов** · страница {page}\n\n{entries}',
+                                                 allowed_mentions=discord.AllowedMentions.none())
 
     @profile.command(name='профиль',description='Баллы, участие, победы и MVP',extras={'access':'all'})
     @app_commands.rename(member='участник')
@@ -111,7 +138,7 @@ def register_insights(tree, client, store, guild_id):
     @app_commands.rename(bank='банк',week='неделя')
     @app_commands.choices(week=[app_commands.Choice(name='Прошлая',value=-1),app_commands.Choice(name='Текущая',value=0)])
     async def prepare(interaction:discord.Interaction,bank:app_commands.Range[int,1,1000000000],week:int=-1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'admin')
         sheet = await database_call(store,'create_payout_sheet',str(interaction.guild_id),str(interaction.user.id),str(interaction.id),week_range(week),bank)
         await interaction.edit_original_response(content=sheet_text(sheet),attachments=[sheet_file(sheet)],allowed_mentions=discord.AllowedMentions.none())
@@ -119,7 +146,7 @@ def register_insights(tree, client, store, guild_id):
     @sheets.command(name='список',description='Сохранённые ведомости премий',extras={'access':'admin'})
     @app_commands.rename(page='страница')
     async def list_sheets(interaction:discord.Interaction,page:app_commands.Range[int,1,10000]=1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'admin')
         rows = await database_call(store,'payout_sheets',str(interaction.guild_id),(page-1)*15)
         await interaction.edit_original_response(content='**Ведомости**\n'+('\n'.join(
@@ -128,7 +155,7 @@ def register_insights(tree, client, store, guild_id):
     @sheets.command(name='посмотреть',description='Снимок премий и полная выгрузка CSV',extras={'access':'admin'})
     @app_commands.rename(number='номер')
     async def view_sheet(interaction:discord.Interaction,number:app_commands.Range[int,1]):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'admin')
         sheet = await database_call(store,'payout_sheet',str(interaction.guild_id),number)
         await interaction.edit_original_response(content=sheet_text(sheet),attachments=[sheet_file(sheet)],allowed_mentions=discord.AllowedMentions.none())
@@ -137,7 +164,7 @@ def register_insights(tree, client, store, guild_id):
     @app_commands.rename(number='номер',state='статус')
     @app_commands.choices(state=[app_commands.Choice(name='Утверждена',value='approved'),app_commands.Choice(name='Выплачена',value='paid')])
     async def status(interaction:discord.Interaction,number:app_commands.Range[int,1],state:str):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'admin')
         sheet = await database_call(store,'payout_sheet',str(interaction.guild_id),number)
         async def apply(current):

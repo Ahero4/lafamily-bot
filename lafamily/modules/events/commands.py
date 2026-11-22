@@ -72,6 +72,14 @@ class EventCommands(app_commands.Group):
             available_win_bonus=event_type["win_bonus"], available_mvp_bonus=event_type["mvp_bonus"],
         )
         if voice is not None:
+            if isinstance(voice, app_commands.AppCommandChannel):
+                voice_id = voice.id
+                try:
+                    voice = interaction.guild.get_channel(voice_id) or await interaction.guild.fetch_channel(voice_id)
+                except discord.DiscordException as error:
+                    raise UserError("Выберите доступный голосовой канал этого сервера.") from error
+            if not isinstance(voice, discord.VoiceChannel) or voice.guild.id != interaction.guild_id:
+                raise UserError("Выберите голосовой канал этого сервера.")
             # Снимок присутствующих на момент создания; боты не получают баллы.
             if not voice.permissions_for(interaction.user).view_channel:
                 raise UserError("У вас нет доступа к выбранному голосовому каналу.")
@@ -200,6 +208,7 @@ class EventCommands(app_commands.Group):
             raise UserError("Ботов нельзя добавлять в состав или выбирать как MVP.")
 
         candidate = dict(report)
+        candidate.pop("last_edit", None)
         if kind is not None:
             kind_id = int(kind) if re.fullmatch(r"[0-9]{1,19}", kind) else 0
             event_type = None

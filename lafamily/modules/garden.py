@@ -26,7 +26,7 @@ class GardenService:
         if self.restoring():
             raise UserError('База восстанавливается. Откройте /сад после переподключения.')
 
-    async def card(self, owner, selected=None):
+    async def card(self, owner, selected=None, *, back=None):
         now = self.clock()
         rows = await database_call(self.store,'garden_snapshot',str(self.guild_id),str(owner),now)
         embed = discord.Embed(title='🌱 Ваш сад', colour=0x4CAF50)
@@ -48,7 +48,7 @@ class GardenService:
         embed.add_field(name='Правила',value='Первый PayDay засчитывается автоматически. Для каждого следующего отмечайте обработку в текущем часу.\nУдобрение отмечайте один раз за посадку. В :50 бот напомнит в ЛС, если остались обработка или удобрение.\nЧтобы освободить место, соберите созревшие растения.',inline=False)
         embed.add_field(name='Добавление посадок', value='**Новая посадка** — оставьте поле «Осталось PayDay» пустым.\n**Уже растёт в игре** — укажите остаток и отметьте обработку в текущем часу. Остаток 0 означает, что урожай уже созрел.', inline=False)
         embed.add_field(name='Забыли отметку в боте?',value='Если в игре обработали растения, выберите одну посадку → «Исправить PayDay» и укажите остаток по игре. Обработку текущего часа отметьте отдельно.',inline=False)
-        return embed, GardenView(self,owner,rows,selected)
+        return embed, GardenView(self,owner,rows,selected,back=back)
 
     async def tick(self, now=None):
         if self.restoring(): return
@@ -153,14 +153,14 @@ def reminder_view(guild,owner,hour,processing,fertilizer):
 
 
 class CultureView(discord.ui.View):
-    def __init__(self, service, owner):
+    def __init__(self, service, owner, *, back=None):
         super().__init__(timeout=180)
         self.service,self.owner=service,owner
         select=discord.ui.Select(placeholder='Выберите культуру',options=[
             discord.SelectOption(label=name,value=crop) for crop,(name,_) in CROPS.items()])
         async def choose(interaction):
             service.check(interaction,owner)
-            await interaction.response.send_modal(PlantModal(service,owner,select.values[0]))
+            await interaction.response.send_modal(PlantModal(service,owner,select.values[0],back=back))
         select.callback=choose
         self.add_item(select)
 
@@ -173,11 +173,12 @@ class CultureView(discord.ui.View):
 
 
 class PlantModal(discord.ui.Modal, title='Добавить посадку'):
-    def __init__(self, service, owner, crop):
+    def __init__(self, service, owner, crop, *, back=None):
         super().__init__()
         if crop not in CROPS:
             raise UserError('Выберите культуру из списка.')
         self.service,self.owner,self.crop=service,owner,crop
+        self.back=back
         self.title=CROPS[crop][0]
         self.quantity=discord.ui.TextInput(label='Количество',placeholder='От 1 до 9',max_length=2)
         self.remaining=discord.ui.TextInput(label='Осталось PayDay',required=False,
@@ -198,7 +199,7 @@ class PlantModal(discord.ui.Modal, title='Добавить посадку'):
             remaining[self.crop]=int(text)
         await interaction.response.defer(ephemeral=True)
         await database_call(self.service.store,'garden_plant',str(self.service.guild_id),str(self.owner),str(interaction.id),{self.crop:int(quantity)},remaining=remaining)
-        embed,view=await self.service.card(self.owner)
+        embed,view=await self.service.card(self.owner,back=self.back)
         await interaction.edit_original_response(content='Посадка сохранена.',embed=embed,view=view)
 
     async def on_error(self, interaction, error):
@@ -206,9 +207,10 @@ class PlantModal(discord.ui.Modal, title='Добавить посадку'):
 
 
 class CorrectPaydayModal(discord.ui.Modal, title='Исправить PayDay'):
-    def __init__(self,service,owner,row):
+    def __init__(self,service,owner,row,*,back=None):
         super().__init__()
         self.service,self.owner,self.row=service,owner,dict(row)
+        self.back=back
         self.remaining=discord.ui.TextInput(label='Осталось PayDay (по игре)',
             default=str(CROPS[row['crop']][1]-row['progress']),
             placeholder=f"От 0 до {CROPS[row['crop']][1]}",max_length=2)
@@ -222,7 +224,7 @@ class CorrectPaydayModal(discord.ui.Modal, title='Исправить PayDay'):
         await interaction.response.defer(ephemeral=True,thinking=True)
         await database_call(self.service.store,'garden_correct_remaining',str(self.service.guild_id),str(self.owner),
                             self.row['id'],int(text),self.row,str(interaction.id),self.service.clock)
-        embed,view=await self.service.card(self.owner,self.row['id'])
+        embed,view=await self.service.card(self.owner,self.row['id'],back=self.back)
         await interaction.edit_original_response(content='Остаток PayDay сохранён. Обработку текущего часа отметьте отдельно.',embed=embed,view=view)
 
     async def on_error(self,interaction,error):
@@ -230,10 +232,20 @@ class CorrectPaydayModal(discord.ui.Modal, title='Исправить PayDay'):
 
 
 class GardenView(discord.ui.View):
-    def __init__(self,service,owner,rows,selected=None):
+    def __init__(self,service,owner,rows,selected=None,*,back=None):
         super().__init__(timeout=900)
         self.service,self.owner=service,owner
         self.selected=selected if any(r['id']==selected for r in rows) else None
+        self.back=back
+        if back is not None:
+            back_button=discord.ui.Button(label='Назад',row=3)
+
+            async def go_back(interaction):
+                self.service.check(interaction,self.owner)
+                await back(interaction)
+
+            back_button.callback=go_back
+            self.add_item(back_button)
         if rows:
             options=[discord.SelectOption(label='Весь сад',value='all',default=self.selected is None)]
             options += [discord.SelectOption(label=f"#{r['id']} {CROPS[r['crop']][0]} ×{r['quantity']}",value=str(r['id']),default=r['id']==self.selected) for r in rows]
@@ -252,12 +264,12 @@ class GardenView(discord.ui.View):
 
     async def refresh(self,interaction,content=None):
         if not interaction.response.is_done(): await interaction.response.defer()
-        embed,view=await self.service.card(self.owner,self.selected)
+        embed,view=await self.service.card(self.owner,self.selected,back=self.back)
         await interaction.edit_original_response(content=content,embed=embed,view=view)
 
     @discord.ui.button(label='Посадить',style=discord.ButtonStyle.success,row=1)
     async def plant(self,interaction,button):
-        await interaction.response.send_message('Выберите культуру для посадки.',view=CultureView(self.service,self.owner),ephemeral=True)
+        await interaction.response.send_message('Выберите культуру для посадки.',view=CultureView(self.service,self.owner,back=self.back),ephemeral=True)
 
     async def action(self,interaction,action):
         await interaction.response.defer()
@@ -284,19 +296,29 @@ class GardenView(discord.ui.View):
         row=next((r for r in rows if r['id']==self.selected),None)
         if row is None or row['ripe_hour'] is not None:
             raise UserError('Исправлять можно только растущую посадку. Обновите /сад.')
-        await interaction.response.send_modal(CorrectPaydayModal(self.service,self.owner,row))
+        await interaction.response.send_modal(CorrectPaydayModal(self.service,self.owner,row,back=self.back))
 
     @discord.ui.button(label='Обновить',row=2)
     async def update(self,interaction,button): await self.refresh(interaction)
+
+
+async def show_garden(service,interaction,*,back=None):
+    service.check(interaction,interaction.user.id)
+    if back is None:
+        await interaction.response.defer(ephemeral=True,thinking=True)
+    else:
+        await interaction.response.defer()
+    embed,view=await service.card(interaction.user.id,back=back)
+    if back is None:
+        await interaction.edit_original_response(embed=embed,view=view)
+    else:
+        await interaction.edit_original_response(content=None,embed=embed,view=view)
 
 
 def register_garden(tree,service,guild_id):
     @tree.command(name='сад',description='Посадки, обработка, удобрение и сбор личного сада',guild=discord.Object(id=guild_id),extras={'access':'all'})
     @app_commands.guild_only()
     async def garden(interaction: discord.Interaction):
-        service.check(interaction,interaction.user.id)
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        embed,view=await service.card(interaction.user.id)
-        await interaction.edit_original_response(embed=embed,view=view)
+        await show_garden(service,interaction)
 
     return {'garden': garden.callback}

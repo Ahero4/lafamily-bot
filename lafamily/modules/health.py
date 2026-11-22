@@ -151,7 +151,7 @@ def register_health(tree,service,guild_id):
     @app_commands.rename(kind='операция',number='номер')
     @app_commands.choices(kind=[app_commands.Choice(name='Карточка отчёта',value='report')])
     async def recover(interaction:discord.Interaction,kind:str,number:app_commands.Range[int,1]=1):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'admin')
         if kind != 'report':
             raise UserError('Доступно восстановление карточки отчёта.')

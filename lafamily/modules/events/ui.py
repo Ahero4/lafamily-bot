@@ -6,7 +6,7 @@ import time
 from typing import TYPE_CHECKING
 
 import discord
-from discord.utils import escape_markdown
+from discord.utils import escape_markdown, escape_mentions
 
 from lafamily.errors import UserError
 from lafamily.async_database import database_call
@@ -26,6 +26,63 @@ def add_members(embed: discord.Embed, members: list[str]):
             name=f"Участники {offset + 1}–{min(offset + 25, len(members))} из {len(members)}",
             value="\n".join(f"<@{member}>" for member in members[offset:offset + 25]), inline=False,
         )
+
+
+_TYPE_MARKDOWN_ESCAPES = str.maketrans({symbol: "\\" + symbol for symbol in r"\`*_~|[]#()+-!."})
+
+
+def _short_type_name(name: str) -> str:
+    text = " ".join(name.split())
+    if len(text) > 40:
+        text = text[:39].rstrip() + "…"
+    text = text.replace("<", "‹").replace(">", "›")
+    return escape_mentions(text).translate(_TYPE_MARKDOWN_ESCAPES)
+
+
+def _member_change(members: list[str], singular: str, plural: str) -> str:
+    if len(members) == 1:
+        return f"{singular} <@{members[0]}>"
+    shown = 8
+    roster = ", ".join(f"<@{member}>" for member in members[:shown])
+    if len(members) > shown:
+        roster += f" и ещё {len(members) - shown}"
+    return f"{plural} ({len(members)}): {roster}"
+
+
+def _report_edit_summary(edit: dict) -> str:
+    before, after = edit["before"], edit["after"]
+    old_members, new_members = set(before["members"]), set(after["members"])
+    added = sorted(new_members - old_members)
+    removed = sorted(old_members - new_members)
+    lines = []
+    if added:
+        lines.append(_member_change(added, "Добавлен участник", "Добавлены участники"))
+    if removed:
+        lines.append(_member_change(removed, "Удалён участник", "Удалены участники"))
+
+    outcomes = {"": "Без итога", "win": "Победа", "no_win": "Без победы"}
+    old_base = before["points"] - before["win_bonus"]
+    new_base = after["points"] - after["win_bonus"]
+    changes = (
+        ("Вид", before["type_name"], after["type_name"], _short_type_name),
+        ("Дата (Москва)", before["occurred_at"], after["occurred_at"], display_date),
+        ("Итог", before["outcome"], after["outcome"], outcomes.__getitem__),
+        ("Базовые очки", old_base, new_base, str),
+        ("Бонус победы", before["win_bonus"], after["win_bonus"], str),
+        ("MVP", before["mvp_id"], after["mvp_id"], lambda value: f"<@{value}>" if value else "не выбран"),
+        ("Бонус MVP", before["mvp_bonus"], after["mvp_bonus"], str),
+    )
+    for label, old, new, format_value in changes:
+        if old != new:
+            lines.append(f"{label}: {format_value(old)} → {format_value(new)}")
+    if before["note"] != after["note"]:
+        if not after["note"]:
+            lines.append("Примечание удалено")
+        elif not before["note"]:
+            lines.append("Примечание добавлено")
+        else:
+            lines.append("Примечание изменено")
+    return "\n".join(lines)
 
 
 def report_embed(report: dict) -> discord.Embed:
@@ -56,6 +113,10 @@ def report_embed(report: dict) -> discord.Embed:
         embed.add_field(name="Примечание", value=escape_markdown(report["note"]), inline=False)
     if cancelled:
         embed.add_field(name="Причина отмены", value=escape_markdown(report["cancel_reason"]), inline=False)
+    if report.get("last_edit"):
+        summary = _report_edit_summary(report["last_edit"])
+        if summary:
+            embed.add_field(name="Последнее исправление", value=summary, inline=False)
     return embed.set_footer(text="LaFamily • учёт мероприятий")
 
 

@@ -78,7 +78,7 @@ def register_planning(tree,client,store,guild_id):
     @app_commands.describe(start='ЧЧ:ММ — сегодня по Москве, или ГГГГ-ММ-ДД ЧЧ:ММ')
     async def create(interaction:discord.Interaction,name:app_commands.Range[str,1,80],start:str,
                      capacity:app_commands.Range[int,1,100]=100,reminder:bool=True):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'organizer')
         begins = parse_start(start)
         await client.events.channel(interaction.guild,str(interaction.channel_id))
@@ -94,7 +94,7 @@ def register_planning(tree,client,store,guild_id):
     @group.command(name='состав',description='Основной состав, резерв и возможные участники',extras={'access':'all'})
     @app_commands.rename(number='номер')
     async def roster(interaction:discord.Interaction,number:app_commands.Range[int,1]):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         event=await database_call(store,'planned_event',str(interaction.guild_id),number)
         channel=await interaction.guild.fetch_channel(int(event['channel_id']))
         if not channel.permissions_for(interaction.user).view_channel:raise UserError('Нет доступа к каналу МП.')
@@ -111,7 +111,7 @@ def register_planning(tree,client,store,guild_id):
     @group.command(name='закрыть',description='Закрыть запись на МП',extras={'access':'manager'})
     @app_commands.rename(number='номер')
     async def close(interaction:discord.Interaction,number:app_commands.Range[int,1]):
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await require_access_async(interaction,store,'manager')
         await database_call(store,'close_planned',str(interaction.guild_id),str(interaction.user.id),number)
         await interaction.edit_original_response(content='Запись закрыта. Состав сохранён.')

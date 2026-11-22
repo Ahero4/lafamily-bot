@@ -3,6 +3,9 @@
 import asyncio
 import json
 import unittest
+from contextlib import closing
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -69,6 +72,10 @@ class SavedReportEditTests(unittest.IsolatedAsyncioTestCase):
     def audit_edits(self):
         return self.store.db.execute("SELECT * FROM audit_log WHERE action='report.edited' ORDER BY id").fetchall()
 
+    @staticmethod
+    def edit_summary(embed):
+        return next((field.value for field in embed.fields if field.name == "Последнее исправление"), None)
+
     async def confirm(self, payload, interaction=None):
         await payload["view"].confirm.callback(interaction or self.interaction())
 
@@ -83,6 +90,7 @@ class SavedReportEditTests(unittest.IsolatedAsyncioTestCase):
         request.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         self.assertIn("33 → 27", payload["content"])
         self.assertEqual(payload["embed"].description, "Гонка")
+        self.assertIsNone(self.edit_summary(payload["embed"]))
         self.assertEqual(self.saved(), self.original)
         self.assertEqual(self.audit_edits(), [])
 
@@ -108,9 +116,110 @@ class SavedReportEditTests(unittest.IsolatedAsyncioTestCase):
         card_payload = self.message.edit.await_args.kwargs
         self.assertEqual(card_payload["embed"], report_embed(saved))
         self.assertEqual(card_payload["allowed_mentions"].to_dict(), {"parse": []})
+        self.assertEqual(self.edit_summary(card_payload["embed"]).splitlines(), [
+            f"Добавлен участник <@{ADDED}>",
+            f"Удалён участник <@{FIRST}>",
+            "Вид: Капт → Гонка",
+            "Дата (Москва): 03.01.2026 12:00 → 04.01.2026 13:00",
+            "Итог: Победа → Без победы",
+            "Базовые очки: 10 → 12",
+            "Бонус победы: 4 → 0",
+            f"MVP: <@{FIRST}> → <@{ADDED}>",
+            "Бонус MVP: 5 → 3",
+            "Примечание удалено",
+        ])
         with self.assertRaisesRegex(UserError, "уже завершено"):
             await self.confirm(payload)
         self.assertEqual(len(self.audit_edits()), 1)
+
+    async def test_preview_hides_previous_edit_and_public_card_shows_only_latest(self):
+        self.assertIsNone(self.edit_summary(report_embed(self.original)))
+        await self.confirm(await self.preview(self.interaction(), note="Первая правка"))
+        self.assertEqual(self.edit_summary(report_embed(self.saved())), "Примечание изменено")
+        preview = await self.preview(self.interaction(), points=11)
+        self.assertIsNone(self.edit_summary(preview["embed"]))
+        await self.confirm(preview)
+        self.assertEqual(self.edit_summary(report_embed(self.saved())), "Базовые очки: 10 → 11")
+
+    async def test_summary_caps_only_long_rosters_and_escapes_type_names(self):
+        old_members = [str(10000000000000000000 + member) for member in range(100)]
+        new_members = [str(20000000000000000000 + member) for member in range(100)]
+        kind = self.store.set_type(GUILD, ADMIN, "**" * 40, 2)
+        original = self.store.create_report(Draft(
+            GUILD, ORGANIZER, CHANNEL, kind["id"], kind["name"], 2, parse_event_date(DATE),
+            members=old_members,
+        ))
+        updated = dict(original, members=new_members, type_name="[x](https://x) [y](https://y)\n" + f"<@{ADMIN}>" + "*" * 22,
+                       occurred_at=parse_event_date("2026-01-04 13:00"), note="*" * 300, outcome="win",
+                       points=2_000_000, win_bonus=1_000_000, mvp_id=new_members[0], mvp_bonus=1_000_000)
+        saved = self.store.edit_report(GUILD, ADMIN, original["id"], original, updated)
+        cancelled = self.store.cancel_report(GUILD, ADMIN, saved["id"], "*" * 300)
+        embed = report_embed(cancelled)
+        summary = self.edit_summary(embed)
+        lines = summary.splitlines()
+        self.assertTrue(lines[0].startswith("Добавлены участники (100): "))
+        self.assertTrue(lines[1].startswith("Удалены участники (100): "))
+        for line, roster in zip(lines[:2], (new_members, old_members)):
+            self.assertEqual([f"<@{member}>" for member in roster[:8]], [
+                part.removesuffix(" и ещё 92") for part in line.split(": ", 1)[1].split(", ")
+            ])
+        self.assertIn(r"\[x\]\(https://x\) \[y\]\(https://y\)", lines[2])
+        self.assertNotIn(f"<@{ADMIN}>", lines[2])
+        self.assertTrue(all(line.startswith(label) for line, label in zip(lines[2:], (
+            "Вид", "Дата", "Итог", "Базовые очки", "Бонус победы", "MVP", "Бонус MVP", "Примечание добавлено",
+        ), strict=True)))
+        self.assertLessEqual(len(summary.encode("utf-16-le")) // 2, 1024)
+        self.assertLessEqual(len(embed), 6000)
+        self.assertIn("…", lines[2])
+
+    async def test_short_roster_change_shows_all_members_and_barn_has_no_marker(self):
+        fourth = "888888888888888888"
+        updated = dict(self.original, members=[ADDED, fourth], mvp_id=None, mvp_bonus=0)
+        saved = self.store.edit_report(GUILD, ADMIN, self.number, self.original, updated)
+        self.assertEqual(self.edit_summary(report_embed(saved)).splitlines()[:2], [
+            f"Добавлены участники (2): <@{ADDED}>, <@{fourth}>",
+            f"Удалены участники (2): <@{FIRST}>, <@{SECOND}>",
+        ])
+        self.store.configure_barn(GUILD, ADMIN, 3)
+        barn = self.store.create_barn_collection(GUILD, ADMIN, FIRST, CHANNEL, "barn-2", 200)
+        self.assertIsNone(self.edit_summary(report_embed(barn)))
+
+    async def test_restart_recovery_and_cancellation_use_most_recent_edit(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "reports.sqlite"
+            with closing(Store(path)) as store:
+                kind = store.set_type(GUILD, ADMIN, "Капт", 3)
+                original = store.create_report(Draft(
+                    GUILD, ORGANIZER, CHANNEL, kind["id"], kind["name"], 3,
+                    parse_event_date(DATE), members=[FIRST],
+                ))
+                number = original["id"]
+                first = store.edit_report(GUILD, ADMIN, number, original, dict(original, note="Первая правка"))
+                store.edit_report(GUILD, ADMIN, number, first, dict(first, members=[FIRST, ADDED]))
+                store.attach_message(GUILD, number, "810")
+                store.audit(CHANNEL, ADMIN, "report.edited", {"id": number, "before": first, "after": original})
+                # Старый файл может уже содержать правки и некорректные строки журнала.
+                store.db.execute("DROP INDEX report_edit_audit_latest")
+                store.db.execute("INSERT INTO audit_log(guild_id,actor_id,action,details,created_at) VALUES(?,?,?,?,?)",
+                                 (GUILD, ADMIN, "report.edited", "{", first["created_at"]))
+
+            with closing(Store(path)) as store:
+                current = store.report(GUILD, number)
+                summary = f"Добавлен участник <@{ADDED}>"
+                self.assertEqual(self.edit_summary(report_embed(current)), summary)
+                service = EventService(store)
+                service.channel = AsyncMock(return_value=self.channel)
+                self.channel.fetch_message = AsyncMock(return_value=self.message)
+                health = HealthService(SimpleNamespace(events=service), store, int(GUILD))
+                guild = self.interaction().guild
+                await health.recover_report(guild, number)
+                self.assertEqual(self.edit_summary(self.message.edit.await_args.kwargs["embed"]), summary)
+                cancelled = store.cancel_report(GUILD, ADMIN, number, "Причина")
+                self.assertTrue(await service.update_cancelled(guild, cancelled))
+                card = self.message.edit.await_args.kwargs
+                self.assertIn("отменено", card["embed"].title)
+                self.assertEqual(self.edit_summary(card["embed"]), summary)
+                self.assertEqual(card["allowed_mentions"].to_dict(), {"parse": []})
 
     async def test_authority_and_optimistic_concurrency(self):
         with self.assertRaisesRegex(UserError, "администратору"):

@@ -82,6 +82,32 @@ class ImprovementCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(subscriptions.value), 1024)
         self.assertLessEqual(len(full), 6000)
 
+    async def test_history_highlights_award_and_shows_only_relevant_details(self):
+        kind = self.store.set_type(G, U, 'Встреча', 5)
+        def add(name, **changes):
+            draft = Draft(G, U, C, kind['id'], name, 5, '2026-11-20T10:30:00+00:00', members=[U], **changes)
+            return self.store.create_report(draft)['id']
+        standard = add('Встреча')
+        win = add('Захват', outcome='win', win_bonus=3)
+        cancelled = add('Турнир', mvp_id=U, mvp_bonus=2)
+        self.store.cancel_report(G, V, cancelled, '*повтор*\nотчёта')
+        interaction = self.interaction()
+        await self.command('баллы история').callback(interaction)
+        header, removed, bonus, normal = interaction.edit_original_response.call_args.kwargs['content'].split('\n\n')
+        self.assertIn('страница 1', header)
+        self.assertEqual(normal.splitlines(), ['**+5** · Встреча', f'-# Отчёт #{standard} · 20.11.2026 13:30 МСК'])
+        self.assertIn(f'#{win}', bonus)
+        self.assertIn('**+8** · Захват', bonus)
+        self.assertIn('База 5 · победа +3', bonus)
+        self.assertNotIn('MVP', bonus)
+        self.assertIn('**0 · отменён**', removed)
+        self.assertIn('До отмены: база 5 · MVP +2', removed)
+        self.assertIn(r'\*повтор\* отчёта', removed)
+        self.assertIn(f'<@{V}>', removed)
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+        await self.command('баллы история').callback(interaction, 2)
+        self.assertIn('страница 2\n\nЗаписей нет.', interaction.edit_original_response.call_args.kwargs['content'])
+
     async def test_history_handles_maximum_names_and_cancellation_reasons(self):
         kind=self.store.set_type(G,U,'*'*80,10)
         for index in range(5):
@@ -91,6 +117,9 @@ class ImprovementCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.command('баллы история').callback(interaction)
         payload=interaction.edit_original_response.call_args.kwargs
         self.assertLessEqual(len(payload['content']),2000)
+        self.assertEqual(payload['content'].count('**0 · отменён**'), 5)
+        self.assertEqual(payload['content'].count('До отмены: 10'), 5)
+        self.assertEqual(payload['content'].count('Причина:'), 5)
         self.assertEqual(payload['allowed_mentions'].to_dict(),{'parse':[]})
 
     async def test_private_check_is_user_initiated_rate_limited_and_preserves_subscriptions(self):

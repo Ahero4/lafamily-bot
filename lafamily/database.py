@@ -38,6 +38,11 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
                 state TEXT NOT NULL, message_id TEXT,
                 PRIMARY KEY(guild_id, channel_id, version)
             );
+            CREATE TABLE IF NOT EXISTS family_guide_posts (
+                guild_id TEXT NOT NULL, channel_id TEXT NOT NULL, message_id TEXT, search_after TEXT,
+                status TEXT NOT NULL CHECK(status IN ('target','active','retiring')),
+                PRIMARY KEY(guild_id, channel_id)
+            );
             CREATE TABLE IF NOT EXISTS release_settings (
                 guild_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL
             );
@@ -94,6 +99,9 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
                 id INTEGER PRIMARY KEY, guild_id TEXT NOT NULL, actor_id TEXT NOT NULL,
                 action TEXT NOT NULL, details TEXT NOT NULL, created_at TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS report_edit_audit_latest
+                ON audit_log(guild_id, CASE WHEN json_valid(details) THEN json_extract(details, '$.id') END, id DESC)
+                WHERE action='report.edited';
             CREATE INDEX IF NOT EXISTS report_week ON reports(guild_id, occurred_at);
             CREATE TABLE IF NOT EXISTS onboarding_settings (guild_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL, review_id TEXT NOT NULL, role_id TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS onboarding_requests (message_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL, role_id TEXT NOT NULL, approved INTEGER NOT NULL DEFAULT 0);
@@ -316,6 +324,18 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
         barn = self.db.execute('SELECT amount FROM barn_collections WHERE report_id=?', (report_id,)).fetchone()
         if barn:
             report['barn_amount'] = barn['amount']
+            return report
+        edit = self.db.execute("""SELECT details FROM audit_log
+            WHERE guild_id=? AND action='report.edited'
+            AND CASE WHEN json_valid(details) THEN json_extract(details, '$.id') END=?
+            ORDER BY id DESC LIMIT 1""", (guild_id, report_id)).fetchone()
+        if edit:
+            details = json.loads(edit['details'])
+            before, after = details.get('before'), details.get('after')
+            if isinstance(before, dict) and isinstance(after, dict) and all(
+                field in before and field in after for field in REPORT_EDIT_FIELDS
+            ):
+                report['last_edit'] = {'before': before, 'after': after}
         return report
 
     @staticmethod
