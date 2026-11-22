@@ -4,6 +4,13 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 
+DIRECT_REPORT_REQUEST_PREFIX = "mp-direct:"
+
+
+def new_direct_report_request_id() -> str:
+    return DIRECT_REPORT_REQUEST_PREFIX + str(uuid4())
+
+
 @dataclass
 class Draft:
     guild_id: str

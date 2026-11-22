@@ -5,6 +5,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta
 
 from lafamily.errors import UserError
+from lafamily.modules.events.models import DIRECT_REPORT_REQUEST_PREFIX
 from lafamily.modules.events.time import timestamp
 
 
@@ -46,13 +47,27 @@ class InsightsStore:
             (guild_id,user_id,limit,offset))]
 
     def participant_profile(self, guild_id, user_id, period):
-        row = self.db.execute('''SELECT COALESCE(SUM(r.points+CASE WHEN r.mvp_id=m.user_id THEN r.mvp_bonus ELSE 0 END),0) AS total,
-            COALESCE(SUM(CASE WHEN r.occurred_at>=? AND r.occurred_at<? THEN r.points+
-                CASE WHEN r.mvp_id=m.user_id THEN r.mvp_bonus ELSE 0 END ELSE 0 END),0) AS week,
-            COUNT(*) AS events,COALESCE(SUM(r.outcome='win'),0) AS wins,
-            COALESCE(SUM(r.mvp_id=m.user_id),0) AS mvps
+        start, end = period
+        row = self.db.execute('''WITH participation AS (
+            SELECT r.points+CASE WHEN r.mvp_id=m.user_id THEN r.mvp_bonus ELSE 0 END AS awarded,
+                r.occurred_at>=:start AND r.occurred_at<:end AS in_week,
+                substr(r.request_id, 1, length(:direct_prefix))=:direct_prefix AS direct,
+                r.outcome='win' AS win, r.mvp_id=m.user_id AS mvp
             FROM reports r JOIN report_members m ON m.report_id=r.id
-            WHERE r.guild_id=? AND m.user_id=? AND r.cancelled_at IS NULL''', (*period,guild_id,user_id)).fetchone()
+            WHERE r.guild_id=:guild_id AND m.user_id=:user_id AND r.cancelled_at IS NULL
+        )
+        SELECT COALESCE(SUM(awarded),0) AS total,
+            COALESCE(SUM(CASE WHEN in_week THEN awarded END),0) AS week,
+            COUNT(CASE WHEN direct THEN 1 END) AS events,
+            COUNT(CASE WHEN direct AND win THEN 1 END) AS wins,
+            COUNT(CASE WHEN direct AND mvp THEN 1 END) AS mvps,
+            COUNT(CASE WHEN direct AND in_week THEN 1 END) AS week_events,
+            COUNT(CASE WHEN direct AND in_week AND win THEN 1 END) AS week_wins,
+            COUNT(CASE WHEN direct AND in_week AND mvp THEN 1 END) AS week_mvps
+        FROM participation''', {
+            'start': start, 'end': end, 'guild_id': guild_id, 'user_id': user_id,
+            'direct_prefix': DIRECT_REPORT_REQUEST_PREFIX,
+        }).fetchone()
         return dict(row)
 
     def similar_reports(self, draft):

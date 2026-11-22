@@ -106,6 +106,129 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(UserError):
             await self.bot.menu.publish_guide(self.request, 12)
 
+    async def test_help_has_topic_buttons_guide_catalog_and_back(self):
+        writes = self.bot.store.db.total_changes
+        await self.click(await self.open_home(), 'Помощь')
+        help_screen = self.request.edit_original_response.await_args.kwargs
+        self.assertIn('Памятка', help_screen['embed'].title)
+        self.assertEqual([(button.label, button.row) for button in help_screen['view'].children], [
+            ('Баллы', 0), ('Мероприятия', 0), ('Сад', 0),
+            ('Скупщик', 1), ('Коровник', 1), ('Вступление и роли', 1),
+            ('Каталог команд', 2), ('Назад', 2),
+        ])
+        await self.click(help_screen['view'], 'Сад')
+        garden = self.request.edit_original_response.await_args.kwargs
+        self.assertIn('PayDay', garden['embed'].description)
+        self.assertEqual([field.name for field in garden['embed'].fields], ['/сад'])
+        self.assertEqual(garden['allowed_mentions'].to_dict(), {'parse': []})
+        self.request.user.id = 4
+        with self.assertRaises(UserError):
+            await self.click(garden['view'], 'Назад')
+        self.request.user.id = 3
+        await self.click(garden['view'], 'Назад')
+        self.assertEqual(self.request.edit_original_response.await_args.kwargs['embed'].title, help_screen['embed'].title)
+        await self.click(help_screen['view'], 'Каталог команд')
+        self.assertIn('список команд', self.request.edit_original_response.await_args.kwargs['embed'].title)
+        self.assertEqual(self.bot.store.db.total_changes, writes)
+
+    async def test_help_topics_explain_rules_for_points_events_and_price_alerts(self):
+        await self.click(await self.open_home(), 'Помощь')
+        help_view = self.request.edit_original_response.await_args.kwargs['view']
+        checks = {
+            'Баллы': ('подтверждённого отчёта МП', 'ставке вида', 'MVP получает отдельный бонус',
+                       'фиксированная награда', 'по дате события'),
+            'Мероприятия': ('«Участвую»', 'Если мест в основном составе нет', 'в резерв', 'нажмите «Возможно»'),
+            'Скупщик': ('по обычной цене', '95–100% от справочного максимума включительно',
+                        'при достижении справочного максимума и выше'),
+        }
+        for topic, expected in checks.items():
+            with self.subTest(topic=topic):
+                await self.click(help_view, topic)
+                embed = self.request.edit_original_response.await_args.kwargs['embed']
+                for detail in expected:
+                    self.assertIn(detail, embed.description)
+                self.assertTrue(all('Доступ — ' in field.value for field in embed.fields))
+
+    async def test_help_filters_commands_by_registered_role_and_hidden_metadata(self):
+        event_group = self.bot.tree.get_command('мп', guild=discord.Object(id=2))
+
+        @event_group.command(name='скрытая', description='Скрытая команда', extras={'hidden': True})
+        async def hidden(interaction: discord.Interaction):
+            raise AssertionError('Справка не вызывает команды')
+
+        self.bot.store.configure('2', '3', '12', '40', '41')
+        await self.click(await self.open_home(), 'Помощь')
+        help_view = self.request.edit_original_response.await_args.kwargs['view']
+        await self.click(help_view, 'Мероприятия')
+        member = self.request.edit_original_response.await_args.kwargs['embed']
+        member_paths = {field.name for field in member.fields}
+        self.assertEqual(member_paths, {'/мп посмотреть', '/мп виды список', '/мп запись состав'})
+
+        self.request.user.roles = [SimpleNamespace(id=40)]
+        await self.click(help_view, 'Мероприятия')
+        organizer = self.request.edit_original_response.await_args.kwargs['embed']
+        organizer_paths = {field.name for field in organizer.fields}
+        self.assertTrue(member_paths | {'/мп создать', '/мп запись отчёт'} <= organizer_paths)
+        self.assertNotIn('/мп отменить', organizer_paths)
+        self.assertNotIn('/мп редактировать', organizer_paths)
+        self.assertNotIn('/мп скрытая', organizer_paths)
+
+    async def test_service_help_rechecks_role_and_protects_admin_topics(self):
+        self.bot.store.configure('2', '3', '12', '40', '41')
+        self.request.user.roles = [SimpleNamespace(id=41)]
+        await self.click(await self.open_home(), 'Помощь')
+        help_view = self.request.edit_original_response.await_args.kwargs['view']
+        await self.click(help_view, 'Служебная помощь')
+        service = self.request.edit_original_response.await_args.kwargs['view']
+        self.assertEqual([button.label for button in service.children], ['Каналы и настройки', 'Назад'])
+        await self.click(service, 'Каналы и настройки')
+        manager = self.request.edit_original_response.await_args.kwargs['embed']
+        self.assertEqual({field.name for field in manager.fields}, {
+            '/скупщик настройки', '/скупщик обработать', '/заявки настройки',
+        })
+
+        self.request.permissions = discord.Permissions(administrator=True)
+        await self.click(help_view, 'Служебная помощь')
+        admin_service = self.request.edit_original_response.await_args.kwargs['view']
+        self.assertIn('Анонсы и оповещения', [button.label for button in admin_service.children])
+        await self.click(admin_service, 'Резервные копии')
+        backup = self.request.edit_original_response.await_args.kwargs
+        self.assertEqual(len(backup['embed'].fields), 3)
+        self.assertTrue(all('только администратор Discord' in field.value for field in backup['embed'].fields))
+        await self.click(backup['view'], 'Назад')
+        self.assertEqual(self.request.edit_original_response.await_args.kwargs['content'], '**Служебная помощь**')
+
+        self.request.permissions = discord.Permissions.none()
+        with self.assertRaises(UserError):
+            await self.click(admin_service, 'Резервные копии')
+        self.request.user.roles = []
+        with self.assertRaises(UserError):
+            await self.click(help_view, 'Служебная помощь')
+
+        self.request.response.defer.reset_mock()
+        await self.click(backup['view'], 'Назад')
+        self.request.response.defer.assert_awaited_once_with()
+        fallback = self.request.edit_original_response.await_args.kwargs
+        self.assertIn('Памятка', fallback['embed'].title)
+        self.assertNotIn('Служебная помощь', [button.label for button in fallback['view'].children])
+
+    async def test_help_topic_pagination_covers_admin_and_current_access(self):
+        self.request.permissions = discord.Permissions(administrator=True)
+        await self.click(await self.open_home(), 'Помощь')
+        help_view = self.request.edit_original_response.await_args.kwargs['view']
+        await self.click(help_view, 'Мероприятия')
+        page_one = self.request.edit_original_response.await_args.kwargs
+        await self.click(page_one['view'], 'Следующая страница')
+        page_two = self.request.edit_original_response.await_args.kwargs
+        paths = {field.name for page in (page_one, page_two) for field in page['embed'].fields}
+        self.assertEqual(page_two['embed'].footer.text, 'Страница 2/2')
+        self.assertTrue({'/мп редактировать', '/мп отменить', '/мп запись отчёт'} <= paths)
+        self.request.permissions = discord.Permissions.none()
+        await self.click(page_one['view'], 'Следующая страница')
+        without_admin = self.request.edit_original_response.await_args.kwargs['embed']
+        self.assertNotIn('/мп редактировать', [field.name for field in without_admin.fields])
+        self.assertLessEqual(len(without_admin), 6000)
+
     async def test_profile_history_opens_saved_report_and_returns_to_history(self):
         report = self.add_points()
         await self.click(await self.open_home(), 'Профиль')

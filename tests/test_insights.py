@@ -1,10 +1,12 @@
 import unittest
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from lafamily.database import Store
 from lafamily.errors import UserError
-from lafamily.modules.events.models import Draft
+from lafamily.modules.events.models import Draft, new_direct_report_request_id
 from lafamily.modules.events.time import week_range, timestamp
 from lafamily.modules.prices.parser import parse_prices
 
@@ -28,9 +30,43 @@ class InsightsTests(unittest.TestCase):
         self.assertEqual(self.store.points_history(G,U)[0]['cancelled_by'],V)
         self.assertEqual(self.store.points_history('other',U),[])
 
+    def test_profile_week_counts_only_direct_reports_without_changing_balances(self):
+        period = week_range(now=datetime(2026, 11, 18, 12, tzinfo=UTC))
+        self.assertEqual(period, ('2026-11-15T21:00:00.000Z', '2026-11-22T21:00:00.000Z'))
+
+        def direct(occurred_at, **changes):
+            return replace(self.draft, request_id=new_direct_report_request_id(), occurred_at=occurred_at, **changes)
+
+        self.store.create_report(direct('2026-11-15T20:59:59.999Z'))
+        at_start = direct(period[0])
+        saved = self.store.create_report(at_start)
+        self.assertEqual(self.store.create_report(at_start)['id'], saved['id'])
+        amended = self.store.edit_report(G, V, saved['id'], saved, dict(saved, note='По записи #123'))
+        self.assertEqual(amended['request_id'], at_start.request_id)
+        self.store.create_report(direct('2026-11-22T20:59:59.999Z', outcome='no_win', win_bonus=0, mvp_id=V))
+        self.store.create_report(direct(period[1]))
+        cancelled = self.store.create_report(direct(period[0]))
+        self.store.cancel_report(G, V, cancelled['id'], 'Тест')
+        self.store.create_report(direct(period[0], members=[V], mvp_id=V))
+        other_kind = self.store.set_type('other', U, 'Капт', 10)
+        self.store.create_report(direct(period[0], guild_id='other', type_id=other_kind['id']))
+        self.store.create_report(replace(self.draft, occurred_at=period[0], note='Создан через /мп создать'))
+        self.store.configure_barn(G, U, 4)
+        with patch('lafamily.database.timestamp', return_value='2026-11-18T12:00:00.000Z'):
+            self.store.create_barn_collection(G, V, U, self.draft.channel_id, 'barn:123', 300)
+
+        self.assertEqual(self.store.participant_profile(G, U, period), {
+            'total': 86, 'week': 50, 'events': 4, 'wins': 3, 'mvps': 3,
+            'week_events': 2, 'week_wins': 1, 'week_mvps': 1,
+        })
+        self.assertEqual(self.store.participant_profile(G, '999999999999999999', period), {
+            'total': 0, 'week': 0, 'events': 0, 'wins': 0, 'mvps': 0,
+            'week_events': 0, 'week_wins': 0, 'week_mvps': 0,
+        })
+
     def test_duplicate_requires_ack_and_changes_invalidate_it(self):
         self.store.create_report(self.draft)
-        other=replace(self.draft,request_id='different',enforce_duplicates=True)
+        other=replace(self.draft,request_id=new_direct_report_request_id(),enforce_duplicates=True)
         with self.assertRaises(UserError):self.store.create_report(other)
         key,matches=self.store.duplicate_report_key(other)
         self.assertEqual(len(matches),1)

@@ -13,6 +13,9 @@ from lafamily.modules.family_guide import FamilyGuide, guide_embed
 from lafamily.modules.garden import show_garden
 from lafamily.modules.insights import _history_entry, profile_card
 from lafamily.modules.menu_forms import open_bank_form, open_barn_form, open_number_form, open_restore_form
+from lafamily.modules.menu_help import (
+    COMMANDS_PER_PAGE, PUBLIC_TOPICS, SERVICE_TOPICS, TOPICS, help_commands, help_topic_embed, topic_commands,
+)
 from lafamily.modules.prices.parser import LIMITS
 from lafamily.permissions import check_access
 from lafamily.responses import send_error
@@ -167,13 +170,59 @@ class FamilyMenu:
         await interaction.edit_original_response(content=f'**История баллов** · страница {page}\n\n{content}',
                                                  embed=None, view=view, allowed_mentions=discord.AllowedMentions.none())
 
-    async def show_help(self, interaction):
+    async def available_help_commands(self, interaction):
         self.check(interaction)
+        await interaction.response.defer()
+        settings = None if interaction.permissions.administrator else await self.db(interaction, 'settings')
+        self.check(interaction)
+        return help_commands(interaction, self.client.tree, settings)
+
+    async def show_help(self, interaction):
+        commands = await self.available_help_commands(interaction)
+        await self.render_help(interaction, commands)
+
+    async def render_help(self, interaction, commands):
         view = MenuView(self, interaction)
-        view.command('Каталог команд', 'команды')
-        view.button('Назад', self.show_home)
-        await interaction.response.edit_message(content=None, embed=guide_embed(), view=view,
-                                                allowed_mentions=discord.AllowedMentions.none())
+        for index, key in enumerate(PUBLIC_TOPICS):
+            view.button(TOPICS[key].title, partial(self.show_help_topic, key=key), row=index // 3)
+        if any(topic_commands(TOPICS[key], commands) for key in SERVICE_TOPICS):
+            view.button('Служебная помощь', self.show_service_help, row=2)
+        view.command('Каталог команд', 'команды', row=2)
+        view.button('Назад', self.show_home, row=2)
+        await interaction.edit_original_response(content=None, embed=guide_embed(), view=view,
+                                                 allowed_mentions=discord.AllowedMentions.none())
+
+    async def show_service_help(self, interaction, *, returning=False):
+        commands = await self.available_help_commands(interaction)
+        topics = [key for key in SERVICE_TOPICS if topic_commands(TOPICS[key], commands)]
+        if not topics:
+            if returning:
+                await self.render_help(interaction, commands)
+                return
+            raise UserError('Служебная помощь доступна руководству и администраторам.')
+        view = MenuView(self, interaction)
+        for index, key in enumerate(topics):
+            view.button(TOPICS[key].title, partial(self.show_help_topic, key=key), row=index // 3)
+        view.button('Назад', self.show_help, row=2)
+        await interaction.edit_original_response(content='**Служебная помощь**', embed=None, view=view,
+                                                 allowed_mentions=discord.AllowedMentions.none())
+
+    async def show_help_topic(self, interaction, *, key, page=0):
+        topic = TOPICS[key]
+        commands = topic_commands(topic, await self.available_help_commands(interaction))
+        if key in SERVICE_TOPICS and not commands:
+            raise UserError('Этот раздел справки недоступен для вашей роли.')
+        last_page = max(0, (len(commands) - 1) // COMMANDS_PER_PAGE)
+        page = max(0, min(page, last_page))
+        view = MenuView(self, interaction)
+        if last_page:
+            turn_page = partial(self.show_help_topic, key=key)
+            view.button('Предыдущая страница', partial(turn_page, page=page - 1), disabled=page == 0)
+            view.button('Следующая страница', partial(turn_page, page=page + 1), disabled=page == last_page)
+        back = partial(self.show_service_help, returning=True) if key in SERVICE_TOPICS else self.show_help
+        view.button('Назад', back)
+        await interaction.edit_original_response(content=None, embed=help_topic_embed(topic, commands, page), view=view,
+                                                 allowed_mentions=discord.AllowedMentions.none())
 
     async def show_section(self, interaction, *, name):
         admin = name in ADMIN_SECTIONS

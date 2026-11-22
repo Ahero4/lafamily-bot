@@ -23,8 +23,11 @@ def profile_card(member_id, data, subscriptions):
     embed = discord.Embed(title='Профиль участника', description=f'<@{member_id}>', colour=0x5865F2)
     embed.add_field(name='Баллы', inline=False, value=(
         f'**{data["week"]}** за текущую неделю\n**{data["total"]}** за всё время'))
-    embed.add_field(name='Участие в отчётах за всё время', inline=False, value=(
-        f'Участий — **{data["events"]}**\nПобед — **{data["wins"]}**\nMVP — **{data["mvps"]}**'))
+    for scope, prefix in (('за неделю', 'week_'), ('за всё время', '')):
+        embed.add_field(name=f'Участие в отчётах {scope}', inline=False, value=(
+            f'Участий — **{data[prefix + "events"]}**\n'
+            f'Побед — **{data[prefix + "wins"]}**\n'
+            f'MVP — **{data[prefix + "mvps"]}**'))
     if subscriptions is not None:
         remaining = set(subscriptions)
         groups = []
@@ -37,7 +40,8 @@ def profile_card(member_id, data, subscriptions):
             groups.append('**Остальное** · ' + ', '.join(sorted(remaining)))
         embed.add_field(name=f'Подписки скупщика · {len(subscriptions)}', inline=False,
                         value='\n'.join(groups) or 'Пока нет подписок. Выбрать товары можно в разделе «Скупщик».')
-    embed.set_footer(text='В статистику входят действующие отчёты о МП и сборах коровника.')
+    embed.set_footer(text='Баллы — из всех действующих отчётов, включая сборы коровника. '
+                          'Участие — по новым отчётам из /мп создать и кнопки «Создать отчёт».')
     return embed
 
 

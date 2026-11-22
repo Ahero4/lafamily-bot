@@ -16,7 +16,7 @@ from lafamily.release import VERSION, LATEST_UPDATE
 from lafamily.async_database import database_call
 from lafamily.info import send_info, send_farm_info, send_admin_info, send_command_list
 from lafamily.command_groups import command_group
-from lafamily.modules.events.models import Draft
+from lafamily.modules.events.models import Draft, new_direct_report_request_id
 from lafamily.modules.events.payouts import send_payout
 from lafamily.modules.events.service import EventService
 from lafamily.modules.events.time import MOSCOW, display_date, parse_event_date, week_range
@@ -68,6 +68,7 @@ class EventCommands(app_commands.Group):
             guild_id=guild_id, organizer_id=str(interaction.user.id), channel_id=settings["channel_id"],
             type_id=event_type["id"], type_name=event_type["name"], points=event_type["points"],
             occurred_at=parse_event_date(date, now=created_at), note=note or "",
+            request_id=new_direct_report_request_id(),
             win_enabled=bool(event_type["win_enabled"]),
             available_win_bonus=event_type["win_bonus"], available_mvp_bonus=event_type["mvp_bonus"],
         )
