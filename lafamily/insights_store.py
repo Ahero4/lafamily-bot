@@ -200,7 +200,8 @@ class InsightsStore:
         self.db.execute('INSERT OR REPLACE INTO health_notices VALUES (?,?,?)',(guild_id,fingerprint,timestamp()))
 
     def claim_report_recovery(self,guild_id,number):
-        return bool(self.db.execute('INSERT OR IGNORE INTO report_recovery VALUES (?,?)',(guild_id,number)).rowcount)
+        return bool(self.db.execute('''INSERT OR IGNORE INTO report_recovery
+            SELECT guild_id, id FROM reports WHERE guild_id=? AND id=? AND message_id IS NULL''', (guild_id, number)).rowcount)
 
     def forget_report_message(self, guild_id, number, message_id):
         """Сбросить привязку только после подтверждённого удаления той же карточки."""

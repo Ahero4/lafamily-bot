@@ -2,12 +2,14 @@
 
 from io import BytesIO
 import asyncio
+import re
 from datetime import UTC, datetime
 
 import discord
 from discord import app_commands
 from discord.utils import escape_markdown
 
+from lafamily.database import Store
 from lafamily.errors import UserError
 from lafamily.modules.admin_start import admin_setup_guide
 from lafamily.release import VERSION, LATEST_UPDATE
@@ -163,6 +165,117 @@ class EventCommands(app_commands.Group):
         report = await database_call(self.service.store, "report", str(interaction.guild_id), number)
         await interaction.edit_original_response(embed=report_embed(report), allowed_mentions=discord.AllowedMentions.none())
 
+    @app_commands.command(name="редактировать", description="Исправить сохранённый отчёт МП", extras={"access": "admin"})
+    @app_commands.rename(number="номер", kind="вид", date="дата", note="примечание",
+                         clear_note="очистить-примечание", add="добавить", remove="убрать", outcome="итог",
+                         clear_mvp="снять-mvp", points="очки", win_bonus="бонус-победы", mvp_bonus="бонус-mvp")
+    @app_commands.describe(number="Номер сохранённого отчёта МП", kind="Выберите новый вид МП из подсказок",
+                           date="ГГГГ-ММ-ДД ЧЧ:ММ по Москве", note="Новое примечание",
+                           clear_note="Удалить текущее примечание", add="Добавить участника сервера",
+                           remove="ID или упоминания удаляемых участников через пробел или запятую",
+                           outcome="Исправить итог мероприятия", mvp="Выбрать MVP из нового состава",
+                           clear_mvp="Снять MVP и его бонус", points="Новые базовые баллы каждому",
+                           win_bonus="Дополнительные баллы каждому за победу",
+                           mvp_bonus="Дополнительные баллы выбранному MVP")
+    @app_commands.choices(outcome=[app_commands.Choice(name="Победа", value="win"),
+                                  app_commands.Choice(name="Без победы", value="no_win"),
+                                  app_commands.Choice(name="Без итога", value="none")])
+    async def edit_report(self, interaction: discord.Interaction, number: app_commands.Range[int, 1],
+                          kind: str | None = None, date: str | None = None,
+                          note: app_commands.Range[str, 1, 300] | None = None, clear_note: bool = False,
+                          add: discord.Member | None = None, remove: str | None = None,
+                          outcome: str | None = None, mvp: discord.Member | None = None, clear_mvp: bool = False,
+                          points: app_commands.Range[int, 0, 1000000] | None = None,
+                          win_bonus: app_commands.Range[int, 0, 1000000] | None = None,
+                          mvp_bonus: app_commands.Range[int, 0, 1000000] | None = None):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        store = self.service.store
+        await require_access_async(interaction, store, "admin")
+        guild_id = str(interaction.guild_id)
+        report = await database_call(store, "report", guild_id, number)
+        Store.require_editable_report(report)
+        if (clear_note and note is not None) or (clear_mvp and mvp is not None):
+            raise UserError("Выберите замену или очистку поля.")
+        if any(member.bot for member in (add, mvp) if member is not None):
+            raise UserError("Ботов нельзя добавлять в состав или выбирать как MVP.")
+
+        candidate = dict(report)
+        if kind is not None:
+            kind_id = int(kind) if re.fullmatch(r"[0-9]{1,19}", kind) else 0
+            event_type = None
+            if 0 < kind_id <= 2**63 - 1:
+                event_type = await database_call(store, "event_type", guild_id, kind_id)
+            if not event_type:
+                raise UserError("Выберите активный вид МП из подсказок.")
+            candidate["type_name"] = event_type["name"]
+        if date is not None:
+            if not date:
+                raise UserError("Укажите дату и время по Москве.")
+            candidate["occurred_at"] = parse_event_date(date)
+        if note is not None or clear_note:
+            candidate["note"] = note.strip() if note is not None else ""
+
+        removed = set()
+        if remove is not None:
+            for value in re.split(r"[\s,]+", remove.strip()):
+                match = re.fullmatch(r"(?:<@!?([0-9]{17,20})>|([0-9]{17,20}))", value)
+                if not match:
+                    raise UserError("Для удаления укажите Discord ID или упоминание участника.")
+                removed.add(match.group(1) or match.group(2))
+        original_members = set(report["members"])
+        if removed - original_members:
+            raise UserError("В отчёте нет одного из участников, указанных для удаления.")
+        added = {str(add.id)} if add else set()
+        if added & removed:
+            raise UserError("Участника нельзя одновременно добавить и убрать.")
+        candidate["members"] = sorted((original_members - removed) | added)
+        if outcome is not None:
+            candidate["outcome"] = "" if outcome == "none" else outcome
+        candidate["win_bonus"] = win_bonus if win_bonus is not None else (
+            report["win_bonus"] if candidate["outcome"] == "win" else 0)
+        base = report["points"] - report["win_bonus"] if points is None else points
+        candidate["points"] = base + candidate["win_bonus"]
+        if mvp is not None:
+            candidate["mvp_id"] = str(mvp.id)
+        elif clear_mvp or report["mvp_id"] in removed:
+            candidate["mvp_id"] = None
+        candidate["mvp_bonus"] = mvp_bonus if mvp_bonus is not None else (
+            report["mvp_bonus"] if candidate["mvp_id"] else 0)
+        Store.validate_report_edit(report, candidate)
+
+        async def apply(current):
+            # Проверяем только новые назначения. Ушедшие со временем игроки могут остаться в истории.
+            new_members = {str(member.id) for member in (add, mvp) if member is not None}
+            try:
+                available = await asyncio.gather(*(current.guild.fetch_member(int(member)) for member in new_members))
+            except discord.DiscordException as error:
+                raise UserError("Не удалось подтвердить новых участников на сервере. Проверьте состав.") from error
+            if any(member.bot for member in available):
+                raise UserError("Ботов нельзя добавлять в состав или выбирать как MVP.")
+            await require_access_async(current, store, "admin")
+            saved = await database_call(store, "edit_report", guild_id, str(current.user.id), number, report, candidate)
+            published = await self.service.update_report_card(current.guild, saved)
+            message = f"Отчёт #{number} исправлен. Баллы пересчитаны."
+            if not published:
+                message += (f" Карточку обновить не удалось. Используйте /бот восстановить-операцию "
+                            f"операция:Карточка отчёта номер:{number}.")
+            return message
+
+        before_total = report["points"] * len(report["members"]) + report["mvp_bonus"]
+        after_total = candidate["points"] * len(candidate["members"]) + candidate["mvp_bonus"]
+        await interaction.edit_original_response(
+            content=(f"Редактирование отчёта #{number}. Участников: {len(report['members'])} → "
+                     f"{len(candidate['members'])}. Всего баллов: {before_total} → {after_total}."),
+            embed=report_embed(candidate), view=ConfirmAction(store, interaction, "admin", apply),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+
+    @edit_report.autocomplete("kind")
+    async def edit_report_type_autocomplete(self, interaction: discord.Interaction, current: str):
+        if interaction.guild is None or not interaction.permissions.administrator:
+            return []
+        return await self.type_choices(interaction, current)
+
     @app_commands.command(name="общие", description="Очки участников за всё время и текущую неделю", extras={"access": "admin"})
     @app_commands.rename(page="страница")
     @app_commands.describe(page="По 20 участников на страницу, сортировка по общим очкам")
@@ -205,7 +318,8 @@ class EventCommands(app_commands.Group):
         await require_access_async(interaction, self.service.store, "manager")
         report = await database_call(self.service.store,'report',str(interaction.guild_id),number)
         async def apply(current):
-            saved = await database_call(self.service.store,'cancel_report',str(current.guild_id),str(current.user.id),number,reason)
+            saved = await database_call(self.service.store,'cancel_report',str(current.guild_id),str(current.user.id),
+                                        number,reason,expected=report)
             published = await self.service.update_cancelled(current.guild,saved)
             return f'Отчёт #{number} отменён; начисления исключены.' + ('' if published else ' Карточку обновить не удалось. Повторите /мп отменить с тем же номером.')
         if report['cancelled_at']:

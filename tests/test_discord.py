@@ -161,7 +161,7 @@ class DiscordTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual({item["name"] for item in data["инфо"]["options"]}, {"общее", "фарм", "админ"})
             self.assertEqual({item["name"] for item in data["старт"]["options"]}, {"участник", "админ"})
             event = data["мп"]["options"]
-            self.assertEqual({item["name"] for item in event}, {"создать", "виды", "посмотреть", "отменить", "запись"})
+            self.assertEqual({item["name"] for item in event}, {"создать", "виды", "посмотреть", "редактировать", "отменить", "запись"})
             kinds = next(item for item in event if item["name"] == "виды")["options"]
             self.assertEqual({item["name"] for item in kinds}, {"список", "добавить", "отключить"})
             add = next(item for item in kinds if item["name"] == "добавить")

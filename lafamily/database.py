@@ -21,6 +21,10 @@ from lafamily.onboarding_store import OnboardingStore
 from lafamily.garden_store import GardenStore
 
 
+REPORT_EDIT_FIELDS = ("type_name", "occurred_at", "note", "points", "outcome", "win_bonus",
+                      "mvp_id", "mvp_bonus", "members")
+
+
 class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, JobsStore, BackupStore, ChannelStore, OnboardingStore, GardenStore):
     def __init__(self, path: str | Path):
         if str(path) != ":memory:":
@@ -314,10 +318,75 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
             report['barn_amount'] = barn['amount']
         return report
 
+    @staticmethod
+    def require_editable_report(report: dict):
+        if "barn_amount" in report:
+            raise UserError("Команда редактирует только отчёты МП. Ошибочный сбор отмените через /мп отменить.")
+        if report["cancelled_at"]:
+            raise UserError("Отменённый отчёт нельзя редактировать.")
+
+    @classmethod
+    def validate_report_edit(cls, report: dict, updated: dict):
+        cls.require_editable_report(report)
+        members = updated["members"]
+        if not 1 <= len(members) <= 100 or len(set(members)) != len(members) or any(
+            not re.fullmatch(r"[0-9]{17,20}", member) for member in members
+        ):
+            raise UserError("В отчёте должно быть от 1 до 100 разных участников с корректными Discord ID.")
+        cls.validate_points(updated["points"] - updated["win_bonus"])
+        cls.validate_points(updated["win_bonus"])
+        cls.validate_points(updated["mvp_bonus"])
+        if updated["outcome"] not in ("", "win", "no_win"):
+            raise UserError("Неизвестный итог события.")
+        if updated["win_bonus"] and updated["outcome"] != "win":
+            raise UserError("Бонус победы доступен только при победе.")
+        if updated["mvp_id"] and (updated["mvp_id"] not in members or not updated["mvp_bonus"]):
+            raise UserError("MVP должен быть в составе, а его бонус — больше нуля.")
+        if updated["mvp_bonus"] and not updated["mvp_id"]:
+            raise UserError("Для бонуса MVP выберите участника.")
+        if updated["note"] != report["note"] and len(updated["note"]) > 300:
+            raise UserError("Примечание должно содержать не более 300 символов.")
+        if all(report[field] == updated[field] for field in REPORT_EDIT_FIELDS):
+            raise UserError("Укажите хотя бы одно изменение отчёта.")
+
+    def edit_report(self, guild_id: str, actor_id: str, report_id: int, expected: dict, proposed: dict) -> dict:
+        with self.transaction():
+            report = self.report(guild_id, report_id)
+            self.require_editable_report(report)
+            before = {field: report[field] for field in REPORT_EDIT_FIELDS}
+            if any(before[field] != expected[field] for field in REPORT_EDIT_FIELDS):
+                raise UserError("Отчёт изменился после предпросмотра. Откройте /мп редактировать заново.")
+            after = {field: proposed[field] for field in REPORT_EDIT_FIELDS}
+            after["members"] = sorted(after["members"])
+            self.validate_report_edit(report, after)
+            self.db.execute("""UPDATE reports SET type_name=?, occurred_at=?, note=?, points=?,
+                outcome=?, win_bonus=?, mvp_id=?, mvp_bonus=? WHERE guild_id=? AND id=?""",
+                (after["type_name"], after["occurred_at"], after["note"], after["points"], after["outcome"],
+                 after["win_bonus"], after["mvp_id"], after["mvp_bonus"], guild_id, report_id))
+            if before["members"] != after["members"]:
+                self._update_edited_report_members(guild_id, report_id, before["members"], after["members"])
+            self.audit(guild_id, actor_id, "report.edited", {"id": report_id, "before": before, "after": after})
+            return self.report(guild_id, report_id)
+
+    def _update_edited_report_members(self, guild_id: str, report_id: int, before: list[str], after: list[str]):
+        member_count = """SELECT COUNT(DISTINCT m.user_id) FROM reports r
+            JOIN report_members m ON m.report_id=r.id WHERE r.guild_id=?"""
+        old_count = self.db.execute(member_count, (guild_id,)).fetchone()[0]
+        self.db.executemany("DELETE FROM report_members WHERE report_id=? AND user_id=?",
+                            [(report_id, member) for member in set(before) - set(after)])
+        self.db.executemany("INSERT INTO report_members VALUES (?, ?)",
+                            [(report_id, member) for member in set(after) - set(before)])
+        new_count = self.db.execute(member_count, (guild_id,)).fetchone()[0]
+        if new_count < old_count:
+            # Сохраняем уже наблюдавшуюся отметку и прежний необъяснённый дефицит.
+            self.db.execute("""UPDATE health_baseline SET members=CASE
+                WHEN members>? THEN members-? ELSE MIN(members, ?) END WHERE guild_id=?""",
+                (old_count, old_count - new_count, new_count, guild_id))
+
     def attach_message(self, guild_id: str, report_id: int, message_id: str):
         self.db.execute("UPDATE reports SET message_id=? WHERE guild_id=? AND id=?", (message_id, guild_id, report_id))
 
-    def cancel_report(self, guild_id: str, actor_id: str, report_id: int, reason: str) -> dict:
+    def cancel_report(self, guild_id: str, actor_id: str, report_id: int, reason: str, *, expected: dict | None = None) -> dict:
         if not reason.strip() or len(reason) > 300:
             raise UserError("Укажите причину отмены от 1 до 300 символов.")
         with self.transaction():
@@ -325,6 +394,10 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
             if report["cancelled_at"]:
                 # Повтор команды восстанавливает публикацию, не меняя причину, очки и журнал.
                 return report
+            if expected is not None and any(
+                expected[field] != report[field] for field in ("members", "points", "mvp_id", "mvp_bonus", "occurred_at")
+            ):
+                raise UserError("Состав, дата или начисления отчёта изменились. Откройте /мп отменить заново.")
             self.db.execute("UPDATE reports SET cancelled_at=?, cancel_reason=? WHERE id=?", (timestamp(), reason, report_id))
             self.audit(guild_id, actor_id, "report.cancelled", {"id": report_id, "reason": reason})
             return self.report(guild_id, report_id)

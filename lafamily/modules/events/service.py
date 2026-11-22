@@ -15,6 +15,34 @@ from lafamily.modules.events.ui import ReportView, report_embed
 logger = logging.getLogger(__name__)
 
 
+async def sync_report_message(store, message, published: dict):
+    # Сетевой запрос мог завершиться после публикации более свежей правки. Сверяем именно карточку.
+    visible = report_embed(published)
+    while True:
+        latest = await database_call(store, "report", published["guild_id"], published["id"])
+        expected = report_embed(latest)
+        if expected == visible:
+            return
+        await message.edit(embed=expected, allowed_mentions=discord.AllowedMentions.none())
+        visible = expected
+
+
+async def publish_report_message(store, channel, report: dict) -> bool:
+    guild_id, number = report["guild_id"], report["id"]
+    # Первая отправка и восстановление делят один допуск на публикацию.
+    if not await database_call(store, "claim_report_recovery", guild_id, number):
+        return False
+    try:
+        message = await channel.send(embed=report_embed(report), allowed_mentions=discord.AllowedMentions.none())
+    except discord.HTTPException as error:
+        if 400 <= error.status < 500 and error.status != 408:
+            await database_call(store, "release_report_recovery", guild_id, number)
+        raise
+    await database_call(store, "attach_message", guild_id, number, str(message.id))
+    await sync_report_message(store, message, report)
+    return True
+
+
 class EventService:
     def __init__(self, store: Store):
         self.store = store
@@ -86,13 +114,10 @@ class EventService:
         # Сначала сохраняем начисление. Сбой публикации не должен потерять отчёт.
         published = False
         try:
-            message = await channel.send(embed=report_embed(report), allowed_mentions=discord.AllowedMentions.none())
-            await database_call(self.store, "attach_message", draft.guild_id, report["id"], str(message.id))
-            # Если руководство успело отменить отчёт во время отправки, обновляем публикацию.
-            latest = await database_call(self.store, "report", draft.guild_id, report["id"])
-            if latest["cancelled_at"]:
-                await message.edit(embed=report_embed(latest))
-            published = True
+            published = bool(report["message_id"]) or await publish_report_message(self.store, channel, report)
+            if not published:
+                latest = await database_call(self.store, "report", draft.guild_id, report["id"])
+                published = bool(latest["message_id"])
         except Exception as error:
             log_error(f"Отчёт #{report['id']} сохранён; ошибка публикации", error)
         content = f"Отчёт #{report['id']} сохранён. Каждому из {len(report['members'])} участников начислено {report['points']} очк."
@@ -103,6 +128,9 @@ class EventService:
         return content
 
     async def update_cancelled(self, guild: discord.Guild, report: dict) -> bool:
+        return await self.update_report_card(guild, report)
+
+    async def update_report_card(self, guild: discord.Guild, report: dict) -> bool:
         barn = 'barn_amount' in report
         if not report["message_id"] and not barn:
             return False
@@ -118,11 +146,13 @@ class EventService:
                         break
                 if not report['message_id']:
                     return False
-            await channel.get_partial_message(int(report["message_id"])).edit(
-                embed=report_embed(report), allowed_mentions=discord.AllowedMentions.none(),
-            )
+            message = channel.get_partial_message(int(report["message_id"]))
+            latest = await database_call(self.store, "report", report["guild_id"], report["id"])
+            await message.edit(embed=report_embed(latest), allowed_mentions=discord.AllowedMentions.none())
+            await sync_report_message(self.store, message, latest)
             return True
-        except (discord.DiscordException, UserError):
+        except (discord.DiscordException, OSError, UserError) as error:
+            log_error(f"Не удалось обновить карточку отчёта #{report['id']}", error)
             return False
 
     def close(self):
