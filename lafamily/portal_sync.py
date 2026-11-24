@@ -213,14 +213,20 @@ class PortalSync:
             if view:
                 async with view.lock:
                     check_command_deadline(cmd)
-                    if self.drafts().get(event_id) is not view or cmd.get('choice') != 'going':
-                        raise UserError('Для открытого черновика доступна только запись на участие.')
-                    if view.draft.voice_channel_id and str(getattr(getattr(member.voice, 'channel', None), 'id', '')) != view.draft.voice_channel_id:
-                        raise UserError('Для записи войдите в голосовой канал МП.')
-                    if member_id not in view.draft.members:
-                        if len(view.draft.members) + len(view.pending) >= 100:
-                            raise UserError('Достигнут лимит участников.')
-                        await view.update_members_with(view.message.edit, [*view.draft.members, member_id])
+                    if self.drafts().get(event_id) is not view:
+                        raise UserError('Мероприятие закрыто или недоступно.')
+                    choice = cmd.get('choice')
+                    if choice == 'no':
+                        await view.leave_members(view.message.edit, member_id)
+                    elif choice == 'going':
+                        if view.draft.voice_channel_id and str(getattr(getattr(member.voice, 'channel', None), 'id', '')) != view.draft.voice_channel_id:
+                            raise UserError('Для записи войдите в голосовой канал МП.')
+                        if member_id not in view.draft.members and member_id not in view.pending:
+                            if len(view.draft.members) + len(view.pending) >= 100:
+                                raise UserError('Достигнут лимит участников.')
+                            await view.update_members_with(view.message.edit, [*view.draft.members, member_id])
+                    else:
+                        raise UserError('Для черновика доступны участие и выход из состава.')
                     await self.db('portal_result', self.guild, key)
             else:
                 _, message = await self.message_for(guild, event)

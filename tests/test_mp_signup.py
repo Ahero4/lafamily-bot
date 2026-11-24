@@ -69,3 +69,30 @@ class SignupTests(unittest.IsolatedAsyncioTestCase):
         interaction.user.voice = SimpleNamespace(channel=SimpleNamespace(id=55))
         await view.join.callback(interaction)
         self.assertEqual(draft.members, ['4'])
+
+    async def test_self_withdraw_from_full_featured_draft_and_component_budget(self):
+        draft = Draft('1', '2', '3', 1, 'МП', 5, '2026-10-28T10:00:00+00:00',
+                      members=[str(n) for n in range(2, 102)], voice_channel_id='55',
+                      win_enabled=True, available_win_bonus=2, available_mvp_bonus=3,
+                      mvp_id='2', mvp_bonus=3)
+        view = ReportView(SimpleNamespace(views={}, store=None), draft)
+        self.addCleanup(view.finish)
+        for page in range((len(draft.members) + view.PAGE_SIZE - 1) // view.PAGE_SIZE):
+            view.page = page
+            view.payload()
+            # discord.py counts sections, text displays and accessories along with action rows.
+            self.assertLessEqual(view.total_children_count, 40)
+            self.assertIn(view.leave, list(view.walk_children()))
+        self.assertEqual(view.leave.style, discord.ButtonStyle.danger)
+        interaction = SimpleNamespace(guild_id=1, user=SimpleNamespace(id=2, bot=False, voice=None),
+            response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock(),
+            followup=SimpleNamespace(send=AsyncMock()))
+        await view.leave.callback(interaction)
+        self.assertEqual(draft.members, [str(n) for n in range(3, 102)])
+        self.assertEqual((draft.mvp_id, draft.mvp_bonus), (None, 0))
+        await view.leave.callback(interaction)
+        interaction.edit_original_response.assert_awaited_once()
+        self.assertTrue(interaction.followup.send.await_args.kwargs['ephemeral'])
+        interaction.guild_id = 9
+        with self.assertRaises(UserError):
+            await view.leave.callback(interaction)

@@ -129,7 +129,7 @@ def closed_draft(text):
 class ReportView(discord.ui.LayoutView):
     """Черновик живёт 1 час; им управляют автор и руководство сервера."""
 
-    PAGE_SIZE = 7
+    PAGE_SIZE = 6
     add_row = discord.ui.ActionRow()
     confirm_row = discord.ui.ActionRow()
     join_row = discord.ui.ActionRow()
@@ -215,7 +215,7 @@ class ReportView(discord.ui.LayoutView):
         pending = [member for member in self.pending if member not in members]
         if pending:
             lines.append(f'Ожидают проверки: {len(pending)} · всего с заявками: {len(members) + len(pending)}\n' + ', '.join(f'<@{member}>' for member in pending))
-        lines.extend(['', 'Нажмите «Участвовать», чтобы записаться. Организаторы могут убрать участника кнопкой ❌.',
+        lines.extend(['', 'Нажмите «Участвовать» для записи или «Выйти», чтобы снять свою заявку. Организаторы могут убрать участника кнопкой ❌.',
                       'Черновик действует 1 час. При подтверждении баллы получат только участники состава.',
                       f'**Состав: {len(members)}/100** · страница {self.page + 1}/{last_page + 1}'])
         if notice:
@@ -438,6 +438,30 @@ class ReportView(discord.ui.LayoutView):
             if len(self.pending) + len(self.draft.members) >= 100:
                 raise UserError("В этом отчёте уже записано 100 человек.")
             await self.update_members(interaction, [*self.draft.members, member_id])
+
+    async def leave_members(self, edit, member_id):
+        if member_id not in self.draft.members and member_id not in self.pending:
+            return False
+        old_pending = self.pending
+        self.pending = [member for member in old_pending if member != member_id]
+        try:
+            await self.update_members_with(edit, [member for member in self.draft.members if member != member_id])
+        except BaseException:
+            self.pending = old_pending
+            raise
+        self.draft.duplicate_ack = ''
+        return True
+
+    @join_row.button(label="Выйти", custom_id="leave", style=discord.ButtonStyle.danger)
+    async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        async with self.lock:
+            self.check_open(interaction)
+            if interaction.user.bot:
+                raise UserError("Действие доступно только участникам сервера.")
+            changed = await self.leave_members(interaction.edit_original_response, str(interaction.user.id))
+        await interaction.followup.send("Вы вышли из состава МП." if changed else "Вы не записаны на это МП.",
+                                       ephemeral=True)
 
     @join_row.button(label="Обновить", custom_id="refresh", style=discord.ButtonStyle.secondary)
     async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):

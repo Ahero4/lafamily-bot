@@ -262,3 +262,78 @@ class PortalDeliveryTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.wait_for(task, 1)
         self.assertFalse(self.store.portal_batch(G)['results'][0]['ok'])
         view.update_members_with.assert_not_awaited()
+
+    def draft_for_portal(self):
+        from lafamily.modules.events.models import Draft, new_direct_report_request_id
+        from lafamily.modules.events.ui import ReportView
+
+        sync, channel, _ = self.sync_for_cards()
+        channel.id = int(C)
+        channel.guild.fetch_member.return_value.voice = None
+        other = '666666666666666666'
+        draft = Draft(G, U, C, 1, 'Test', 5, '2026-11-24T10:00:00Z',
+                      request_id=new_direct_report_request_id(), members=[U, other],
+                      voice_channel_id=C, mvp_id=U, mvp_bonus=3)
+        service = SimpleNamespace(views={}, store=self.store)
+        view = ReportView(service, draft)
+        self.addCleanup(view.finish)
+        view.message = Mock(id=444444444444444444, channel=channel, edit=AsyncMock())
+        service.views[(G,U)] = view
+        sync.client.events = service
+        cmd = dict(self.command, eventId='draft:' + str(view.message.id), choice='no')
+        return sync, view, cmd, other
+
+    async def test_draft_organizer_can_leave_without_voice_and_retry(self):
+        sync, view, cmd, other = self.draft_for_portal()
+        pending = '777777777777777777'
+        view.pending = [pending]
+        await sync.command(cmd)
+        self.assertEqual(view.draft.members, [other])
+        self.assertEqual(view.pending, [pending])
+        self.assertEqual((view.draft.mvp_id, view.draft.mvp_bonus), (None, 0))
+        self.assertEqual(sync.draft_snapshots()[0]['going'], [other])
+        for retry in (cmd, dict(cmd, id='repeat')):
+            await sync.command(retry)
+        self.assertTrue(all(row['ok'] for row in self.store.portal_batch(G)['results']))
+        view.message.edit.assert_awaited_once()
+
+    async def test_draft_pending_user_can_leave_while_other_mvp_remains(self):
+        sync, view, cmd, other = self.draft_for_portal()
+        view.draft.members = [other]
+        view.draft.mvp_id = other
+        view.pending = [U, '777777777777777777']
+        await sync.command(cmd)
+        self.assertEqual(view.pending, ['777777777777777777'])
+        self.assertEqual(view.draft.members, [other])
+        self.assertEqual((view.draft.mvp_id, view.draft.mvp_bonus), (other, 3))
+        self.assertTrue(self.store.portal_batch(G)['results'][0]['ok'])
+        view.message.edit.assert_awaited_once()
+
+    async def test_draft_withdrawal_rolls_back_failed_edit_then_retries(self):
+        sync, view, cmd, other = self.draft_for_portal()
+        view.pending = [U, '777777777777777777']
+        view.message.edit.side_effect = RuntimeError('temporary transport failure')
+        with self.assertRaises(RuntimeError):
+            await sync.command(cmd)
+        self.assertEqual(view.draft.members, [U, other])
+        self.assertEqual(view.pending, [U, '777777777777777777'])
+        self.assertEqual((view.draft.mvp_id, view.draft.mvp_bonus), (U, 3))
+        self.assertFalse(self.store.portal_batch(G)['results'])
+        view.message.edit.side_effect = None
+        await sync.command(cmd)
+        self.assertEqual(view.pending, ['777777777777777777'])
+        self.assertEqual(view.draft.members, [other])
+
+    async def test_closed_expired_or_inaccessible_draft_refuses_withdrawal(self):
+        sync, view, cmd, other = self.draft_for_portal()
+        channel = view.message.channel
+        for condition in ('finished', 'expired', 'hidden'):
+            with self.subTest(condition=condition):
+                view.finished = condition == 'finished'
+                view.expires_at = 0 if condition == 'expired' else float('inf')
+                channel.permissions_for.return_value.view_channel = condition != 'hidden'
+                await sync.command(dict(cmd, id=condition))
+                result = next(r for r in self.store.portal_batch(G)['results'] if r['id'] == condition)
+                self.assertFalse(result['ok'])
+                self.assertEqual(view.draft.members, [U, other])
+                view.message.edit.assert_not_awaited()

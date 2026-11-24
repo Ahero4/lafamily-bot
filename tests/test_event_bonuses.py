@@ -258,8 +258,7 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         guest = self.interaction('member')
         guest.user.id = int(B)
         seen = []
-        self.assertEqual(len(list(view.walk_children())), 40)
-        for page in range(15):
+        for page in range(17):
             components = view.to_components()
             self.assertLessEqual(len(list(view.walk_children())), 40)
             self.assertEqual(view.payload()['allowed_mentions'].to_dict(), discord.AllowedMentions.none().to_dict())
@@ -270,7 +269,7 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(section['accessory']['emoji']['name'], '❌')
                 seen.append(target)
             forward = next(item for item in view.walk_children() if getattr(item, 'label', None) == 'Далее')
-            if page == 14:
+            if page == 16:
                 self.assertTrue(forward.disabled)
             else:
                 await forward.callback(guest)
@@ -282,9 +281,10 @@ class BonusCommandTests(unittest.IsolatedAsyncioTestCase):
         guest.permissions = discord.Permissions(administrator=True)
         await last.callback(guest)
         self.assertEqual(view.draft.members, members[:-1])
-        remaining = next(row.accessory for row in view.children if isinstance(row, discord.ui.Section))
-        await remaining.callback(guest)
-        self.assertEqual(view.page, 13)
+        for _ in range(3):
+            remaining = next(row.accessory for row in view.children if isinstance(row, discord.ui.Section))
+            await remaining.callback(guest)
+        self.assertEqual(view.page, 15)
 
     async def test_guest_refresh_recovers_single_page_after_discord_applies_unacknowledged_edit(self):
         draft = Draft(G, A, C, self.kind, 'МП', 10, parse_event_date(None), members=[A, B])
