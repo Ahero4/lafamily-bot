@@ -9,6 +9,7 @@ from discord import app_commands
 
 from lafamily.config import Config
 from lafamily.portal_sync import PortalSync
+from lafamily.modules.raffles import RaffleButton, RafflePortal, register_raffles
 from lafamily.modules.database_backups import DatabaseBackups, register_database_backups
 from lafamily.modules.insights import register_insights
 from lafamily.modules.planning import register_planning,SignupView
@@ -68,9 +69,11 @@ class FamilyBot(discord.Client):
         self.events = EventService(store)
         self.planning_card_lock = asyncio.Lock()
         self.portal_sync = PortalSync(self)
+        self.raffles = RafflePortal(config.guild_id)
         self.announcements = AnnouncementService(self, store, config.guild_id)
         self.tree = FamilyTree(self, fallback_to_global=False)
         install_commands(self.tree, self.events, config.guild_id)
+        register_raffles(self.tree, config.guild_id)
         self.tree.add_command(AnnouncementCommands(self.announcements), guild=discord.Object(id=config.guild_id))
         register_barn_commands(self.tree, store, config.guild_id)
         self.garden = GardenService(self, store, config.guild_id)
@@ -95,7 +98,7 @@ class FamilyBot(discord.Client):
 
     async def setup_hook(self):
         self.add_view(MenuLauncher(self.menu))
-        self.add_dynamic_items(GardenReminderButton)
+        self.add_dynamic_items(GardenReminderButton, RaffleButton)
         # Постоянные кнопки продолжают работать после перезапуска.
         self.add_view(EntryView(self.onboarding))
         self.add_view(ReviewView(self.onboarding))

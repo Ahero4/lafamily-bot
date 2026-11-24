@@ -1,0 +1,10 @@
+**
+!requirements.txt
+!main.py
+!backup.py
+!pyproject.toml
+!CHANGELOG.md
+!lafamily/
+!lafamily/**/
+!lafamily/**/*.py
+!lafamily/modules/prices/limits.json
