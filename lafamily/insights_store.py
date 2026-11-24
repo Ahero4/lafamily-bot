@@ -47,16 +47,25 @@ class InsightsStore:
             (guild_id,user_id,limit,offset))]
 
     def participant_profile(self, guild_id, user_id, period):
+        return dict(self._profile_query(guild_id, period, user_id).fetchone())
+
+    def participant_profiles(self, guild_id, period):
+        return self._profile_query(guild_id, period)
+
+    def _profile_query(self, guild_id, period, user_id=None):
+        member_filter = "AND m.user_id=:user_id" if user_id is not None else ""
+        member_column = "" if user_id is not None else "user_id,"
+        group_by = "" if user_id is not None else "GROUP BY user_id"
         start, end = period
-        row = self.db.execute('''WITH participation AS (
-            SELECT r.points+CASE WHEN r.mvp_id=m.user_id THEN r.mvp_bonus ELSE 0 END AS awarded,
+        return self.db.execute(f'''WITH participation AS (
+            SELECT m.user_id, r.points+CASE WHEN r.mvp_id=m.user_id THEN r.mvp_bonus ELSE 0 END AS awarded,
                 r.occurred_at>=:start AND r.occurred_at<:end AS in_week,
                 substr(r.request_id, 1, length(:direct_prefix))=:direct_prefix AS direct,
                 r.outcome='win' AS win, r.mvp_id=m.user_id AS mvp
             FROM reports r JOIN report_members m ON m.report_id=r.id
-            WHERE r.guild_id=:guild_id AND m.user_id=:user_id AND r.cancelled_at IS NULL
+            WHERE r.guild_id=:guild_id {member_filter} AND r.cancelled_at IS NULL
         )
-        SELECT COALESCE(SUM(awarded),0) AS total,
+        SELECT {member_column} COALESCE(SUM(awarded),0) AS total,
             COALESCE(SUM(CASE WHEN in_week THEN awarded END),0) AS week,
             COUNT(CASE WHEN direct THEN 1 END) AS events,
             COUNT(CASE WHEN direct AND win THEN 1 END) AS wins,
@@ -64,11 +73,10 @@ class InsightsStore:
             COUNT(CASE WHEN direct AND in_week THEN 1 END) AS week_events,
             COUNT(CASE WHEN direct AND in_week AND win THEN 1 END) AS week_wins,
             COUNT(CASE WHEN direct AND in_week AND mvp THEN 1 END) AS week_mvps
-        FROM participation''', {
+        FROM participation {group_by}''', {
             'start': start, 'end': end, 'guild_id': guild_id, 'user_id': user_id,
             'direct_prefix': DIRECT_REPORT_REQUEST_PREFIX,
-        }).fetchone()
-        return dict(row)
+        })
 
     def similar_reports(self, draft):
         when = datetime.fromisoformat(draft.occurred_at.replace('Z','+00:00'))

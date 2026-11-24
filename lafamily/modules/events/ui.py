@@ -396,11 +396,14 @@ class ReportView(discord.ui.LayoutView):
             await self.update_members(interaction, members)
 
     async def update_members(self, interaction, members):
+        await self.update_members_with(interaction.edit_original_response, members)
+
+    async def update_members_with(self, edit, members):
         previous_mvp = (self.draft.mvp_id, self.draft.mvp_bonus)
         if self.draft.mvp_id not in members:
             self.draft.mvp_id, self.draft.mvp_bonus = None, 0
         try:
-            await self.edit_layout(interaction.edit_original_response, members)
+            await self.edit_layout(edit, members)
         except BaseException:
             self.draft.mvp_id, self.draft.mvp_bonus = previous_mvp
             raise

@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 
 from lafamily.config import Config
+from lafamily.portal_sync import PortalSync
 from lafamily.modules.database_backups import DatabaseBackups, register_database_backups
 from lafamily.modules.insights import register_insights
 from lafamily.modules.planning import register_planning,SignupView
@@ -65,6 +66,8 @@ class FamilyBot(discord.Client):
         self.restore_request = None
         self.startup_notice = None
         self.events = EventService(store)
+        self.planning_card_lock = asyncio.Lock()
+        self.portal_sync = PortalSync(self)
         self.announcements = AnnouncementService(self, store, config.guild_id)
         self.tree = FamilyTree(self, fallback_to_global=False)
         install_commands(self.tree, self.events, config.guild_id)
@@ -112,6 +115,12 @@ class FamilyBot(discord.Client):
             await asyncio.gather(self.prices.handle(message),
                                  react_to_new_message(message, self.store, self.config.guild_id))
 
+    async def on_raw_message_delete(self, payload):
+        await self.portal_sync.deleted(payload.guild_id, {payload.message_id})
+
+    async def on_raw_bulk_message_delete(self, payload):
+        await self.portal_sync.deleted(payload.guild_id, payload.message_ids)
+
     async def on_raw_message_edit(self, payload):
         if not self.backups.restoring:
             await self.prices.handle_edit(payload)
@@ -134,6 +143,7 @@ class FamilyBot(discord.Client):
                 await channel.send(content=content, allowed_mentions=discord.AllowedMentions.none())
             except Exception as error:
                 log_error('Не удалось отправить результат восстановления БД', error)
+        self.portal_sync.start()
         self.backups.start()
         self.announcements.start()
         self.prices.queue.start()
@@ -150,6 +160,7 @@ class FamilyBot(discord.Client):
             log_error(f"Необработанная ошибка события {event_method}", error)
 
     async def close(self):
+        await self.portal_sync.close()
         await self.garden.close()
         await self.health.close()
         await self.prices.queue.close()

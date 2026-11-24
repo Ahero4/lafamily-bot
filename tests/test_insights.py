@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from lafamily.database import Store
+from lafamily.portal_profile import profile_snapshots
 from lafamily.errors import UserError
 from lafamily.modules.events.models import Draft, new_direct_report_request_id
 from lafamily.modules.events.time import week_range, timestamp
@@ -29,6 +30,23 @@ class InsightsTests(unittest.TestCase):
         self.assertEqual(self.store.participant_profile(G,U,week_range())['total'],0)
         self.assertEqual(self.store.points_history(G,U)[0]['cancelled_by'],V)
         self.assertEqual(self.store.points_history('other',U),[])
+
+    def test_portal_profiles_follow_moscow_week_and_cancellation(self):
+        period = week_range(now=datetime(2026, 11, 18, tzinfo=UTC))
+        report = self.store.create_report(replace(self.draft, request_id=new_direct_report_request_id(),
+                                                  occurred_at=period[0]))
+        following = week_range(now=datetime.fromisoformat(period[1]))
+        for bounds, weekly_points in ((period, 18), (following, 0)):
+            with patch('lafamily.portal_profile.week_range', return_value=bounds):
+                rows = {row['discordId']: row for row in profile_snapshots(self.store, G)}
+                self.assertEqual(set(rows), {U, V})
+                weekly = int(bounds == period)
+                self.assertEqual(rows[U], dict(discordId=U, total=18, week=weekly_points, events=1,
+                    wins=1, mvps=1, weekEvents=weekly, weekWins=weekly, weekMvps=weekly,
+                    weekStart=bounds[0]))
+                self.assertEqual(profile_snapshots(self.store, 'other'), [])
+        self.store.cancel_report(G, V, report['id'], 'Тест')
+        self.assertEqual(profile_snapshots(self.store, G), [])
 
     def test_profile_week_counts_only_direct_reports_without_changing_balances(self):
         period = week_range(now=datetime(2026, 11, 18, 12, tzinfo=UTC))

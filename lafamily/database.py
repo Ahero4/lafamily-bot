@@ -14,6 +14,7 @@ from lafamily.price_delivery_store import PriceDeliveryStore
 from lafamily.price_dm_store import PriceDmStore
 from lafamily.insights_store import InsightsStore
 from lafamily.planning_store import PlanningStore
+from lafamily.portal_store import PortalStore
 from lafamily.jobs_store import JobsStore
 from lafamily.backup_store import BackupStore
 from lafamily.channel_store import ChannelStore
@@ -25,7 +26,7 @@ REPORT_EDIT_FIELDS = ("type_name", "occurred_at", "note", "points", "outcome", "
                       "mvp_id", "mvp_bonus", "members")
 
 
-class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, JobsStore, BackupStore, ChannelStore, OnboardingStore, GardenStore):
+class Store(PortalStore, PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, JobsStore, BackupStore, ChannelStore, OnboardingStore, GardenStore):
     def __init__(self, path: str | Path):
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +145,7 @@ class Store(PriceDeliveryStore, PriceDmStore, InsightsStore, PlanningStore, Jobs
         self.migrate_event_bonuses()
         self.init_insights()
         self.init_planning()
+        self.init_portal()
         self.init_jobs()
         self.init_garden()
         if 'name' not in {row['name'] for row in self.db.execute('PRAGMA table_info(recurring_notices)')}:

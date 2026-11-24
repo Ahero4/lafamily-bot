@@ -24,6 +24,18 @@ def signup_embed(event):
     return embed
 
 
+def signup_count_embed(original, event):
+    # A regular planning card stores counts in its description. Announcement
+    # cards keep their own description and use a dedicated registration field.
+    if original.title == f'Запись на МП #{event["id"]}: {event["name"]}':
+        return signup_embed(event)
+    embed=original.copy()
+    for index in reversed(range(len(embed.fields))):
+        if embed.fields[index].name=='Запись: участников':embed.remove_field(index)
+    embed.add_field(name='Запись: участников',value=f'Основной состав: {len(event["going"])} / {event["capacity"]}; резерв: {len(event["reserve"])}; возможно: {len(event["maybe"])}.',inline=False)
+    return embed
+
+
 class SignupView(discord.ui.View):
     def __init__(self,store):
         super().__init__(timeout=None);self.store=store;self.lock=asyncio.Lock()
@@ -45,13 +57,10 @@ class SignupView(discord.ui.View):
             event=await database_call(self.store,'planned_event',str(interaction.guild_id),int(footer[len(prefix):]))
             if event['channel_id']!=str(interaction.channel_id) or event['message_id']:raise UserError('Карточка не совпала с записью.')
             await database_call(self.store,'bind_planned_message',str(interaction.guild_id),event['id'],str(interaction.message.id))
-        async with self.lock:
+        async with getattr(interaction.client, 'planning_card_lock', self.lock):
             event=await database_call(self.store,'signup_planned',str(interaction.guild_id),event['id'],str(interaction.user.id),choice)
             try:
-                embed=interaction.message.embeds[0].copy()
-                for index in reversed(range(len(embed.fields))):
-                    if embed.fields[index].name=='Запись: участников':embed.remove_field(index)
-                embed.add_field(name='Запись: участников',value=f'Основной состав: {len(event["going"])} / {event["capacity"]}; резерв: {len(event["reserve"])}; возможно: {len(event["maybe"])}.',inline=False)
+                embed = signup_count_embed(interaction.message.embeds[0], event)
                 await interaction.message.edit(embed=embed,allowed_mentions=discord.AllowedMentions.none())
             except discord.HTTPException:
                 pass  # Запись уже сохранена; актуальный состав доступен командой.

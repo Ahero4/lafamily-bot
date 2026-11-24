@@ -80,21 +80,24 @@ class PlanningStore:
         return self.planned_event(guild_id,row['id'])
 
     def signup_planned(self,guild_id,number,user_id,choice):
+        with self.transaction():
+            return self._signup_planned(guild_id,number,user_id,choice)
+
+    def _signup_planned(self,guild_id,number,user_id,choice):
         if choice not in ('going','maybe','no') or not re.fullmatch(r'[0-9]{17,20}',user_id):
             raise UserError('Некорректная запись участника.')
-        with self.transaction():
-            event=self.planned_event(guild_id,number)
-            if event['closed'] or event['starts_at']<=timestamp():
-                raise UserError('Запись закрыта: МП уже началось или закрыто организатором.')
-            if choice=='no':
-                self.db.execute('DELETE FROM planned_signups WHERE event_id=? AND user_id=?',(number,user_id))
-            else:
-                previous=self.db.execute('SELECT choice FROM planned_signups WHERE event_id=? AND user_id=?',(number,user_id)).fetchone()
-                if previous and previous['choice']==choice:return event
-                # Переход из «Возможно» в основной список занимает новое место в очереди.
-                self.db.execute('DELETE FROM planned_signups WHERE event_id=? AND user_id=?',(number,user_id))
-                self.db.execute('INSERT INTO planned_signups(event_id,user_id,choice) VALUES (?,?,?)',(number,user_id,choice))
-            return self.planned_event(guild_id,number)
+        event=self.planned_event(guild_id,number)
+        if event['closed'] or event['starts_at']<=timestamp():
+            raise UserError('Запись закрыта: МП уже началось или закрыто организатором.')
+        if choice=='no':
+            self.db.execute('DELETE FROM planned_signups WHERE event_id=? AND user_id=?',(number,user_id))
+        else:
+            previous=self.db.execute('SELECT choice FROM planned_signups WHERE event_id=? AND user_id=?',(number,user_id)).fetchone()
+            if previous and previous['choice']==choice:return event
+            # Переход из «Возможно» в основной список занимает новое место в очереди.
+            self.db.execute('DELETE FROM planned_signups WHERE event_id=? AND user_id=?',(number,user_id))
+            self.db.execute('INSERT INTO planned_signups(event_id,user_id,choice) VALUES (?,?,?)',(number,user_id,choice))
+        return self.planned_event(guild_id,number)
 
     def close_planned(self,guild_id,actor_id,number):
         with self.transaction():
