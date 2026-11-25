@@ -71,11 +71,13 @@ class SignupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(draft.members, ['4'])
 
     async def test_self_withdraw_from_full_featured_draft_and_component_budget(self):
-        draft = Draft('1', '2', '3', 1, 'МП', 5, '2026-10-28T10:00:00+00:00',
+        draft = Draft('1', '199', '3', 1, 'МП', 5, '2026-10-28T10:00:00+00:00',
                       members=[str(n) for n in range(2, 102)], voice_channel_id='55',
                       win_enabled=True, available_win_bonus=2, available_mvp_bonus=3,
                       mvp_id='2', mvp_bonus=3)
-        view = ReportView(SimpleNamespace(views={}, store=None), draft)
+        store = Store(':memory:')
+        self.addCleanup(store.close)
+        view = ReportView(SimpleNamespace(views={}, store=store), draft)
         self.addCleanup(view.finish)
         for page in range((len(draft.members) + view.PAGE_SIZE - 1) // view.PAGE_SIZE):
             view.page = page
@@ -87,6 +89,20 @@ class SignupTests(unittest.IsolatedAsyncioTestCase):
         interaction = SimpleNamespace(guild_id=1, user=SimpleNamespace(id=2, bot=False, voice=None),
             response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock(),
             followup=SimpleNamespace(send=AsyncMock()))
+        view.page = 0
+        view.payload()
+        public_text = next(item.content for item in view.children if isinstance(item, discord.ui.TextDisplay))
+        self.assertIn('для снятия своей заявки — «Выйти»', public_text)
+        row = next(item for item in view.children if isinstance(item, discord.ui.Section))
+        self.assertEqual(row.accessory.label, 'Организатор / админ')
+        self.assertEqual(str(row.accessory.emoji), '❌')
+        interaction.guild = SimpleNamespace()
+        interaction.permissions = discord.Permissions.none()
+        with self.assertRaisesRegex(UserError, 'организатора или руководства.+«Выйти»'):
+            await row.accessory.callback(interaction)
+        self.assertIn('2', draft.members)
+        interaction.edit_original_response.assert_not_awaited()
+
         await view.leave.callback(interaction)
         self.assertEqual(draft.members, [str(n) for n in range(3, 102)])
         self.assertEqual((draft.mvp_id, draft.mvp_bonus), (None, 0))

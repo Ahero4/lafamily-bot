@@ -215,14 +215,14 @@ class ReportView(discord.ui.LayoutView):
         pending = [member for member in self.pending if member not in members]
         if pending:
             lines.append(f'Ожидают проверки: {len(pending)} · всего с заявками: {len(members) + len(pending)}\n' + ', '.join(f'<@{member}>' for member in pending))
-        lines.extend(['', 'Нажмите «Участвовать» для записи или «Выйти», чтобы снять свою заявку. Организаторы могут убрать участника кнопкой ❌.',
+        lines.extend(['', 'Для записи нажмите «Участвовать», для снятия своей заявки — «Выйти». Кнопками ❌ «Организатор / админ» могут пользоваться организаторы, руководство и администраторы сервера.',
                       'Черновик действует 1 час. При подтверждении баллы получат только участники состава.',
                       f'**Состав: {len(members)}/100** · страница {self.page + 1}/{last_page + 1}'])
         if notice:
             lines.insert(0, notice + '\n')
         self.add_item(discord.ui.TextDisplay('\n'.join(lines)))
         for index, player in enumerate(members[start:start + self.PAGE_SIZE], start=start+1):
-            button = discord.ui.Button(emoji='❌', style=discord.ButtonStyle.secondary,
+            button = discord.ui.Button(label='Организатор / админ', emoji='❌', style=discord.ButtonStyle.secondary,
                 custom_id=f'mp:remove:{self.draft.request_id}:{player}:{self.roster_revision}')
             button.callback = partial(self.remove_player, player=player, revision=self.roster_revision)
             self.add_item(discord.ui.Section(f'{index}. <@{player}>', accessory=button))
@@ -270,7 +270,11 @@ class ReportView(discord.ui.LayoutView):
     async def remove_player(self, interaction, *, player, revision):
         await interaction.response.defer()
         async with self.lock:
-            await self.validate(interaction, removal=True)
+            try:
+                await self.validate(interaction, removal=True)
+            except UserError as error:
+                self.check_open(interaction)
+                raise UserError(f'{error} Чтобы снять свою запись, нажмите «Выйти».') from error
             if revision != self.roster_revision or player not in self.draft.members:
                 raise UserError('Состав изменился. Выберите участника в текущем списке.')
             members = [member for member in self.draft.members if member != player]
