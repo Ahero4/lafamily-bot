@@ -12,6 +12,7 @@ from lafamily.modules.events.time import display_date, week_range
 from lafamily.modules.family_guide import FamilyGuide, guide_embed
 from lafamily.modules.garden import show_garden
 from lafamily.modules.insights import _history_entry, profile_card
+from lafamily.modules.menu_cards import menu_card
 from lafamily.modules.menu_forms import open_bank_form, open_barn_form, open_number_form, open_restore_form
 from lafamily.modules.menu_help import (
     COMMANDS_PER_PAGE, PUBLIC_TOPICS, SERVICE_TOPICS, TOPICS, help_commands, help_topic_embed, topic_commands,
@@ -28,6 +29,7 @@ TITLES = {
     'home': 'LaFamily',
     'ranking': 'Рейтинг семьи',
     'prices': 'Скупщик',
+    'barn': 'Коровник',
     'payouts': 'Премии и ведомости',
     'admin': 'Администрирование',
     'channels': 'Каналы и публикации',
@@ -98,7 +100,7 @@ class FamilyMenu:
         view.button('Мероприятия', self.show_events)
         view.button('Сад', self.show_garden)
         view.section('prices', row=1)
-        view.button('Коровник', partial(open_barn_form, self), row=1)
+        view.section('barn', row=1)
         view.button('Помощь', self.show_help, row=1)
         if interaction.permissions.administrator:
             view.section('admin', row=2)
@@ -106,13 +108,19 @@ class FamilyMenu:
 
     async def open(self, interaction):
         self.check(interaction)
-        await interaction.response.send_message(content='**LaFamily**', view=self.home_view(interaction),
-                                                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+        with menu_card('home') as (embed, files):
+            await interaction.response.send_message(
+                content='**LaFamily**', embed=embed, files=files, view=self.home_view(interaction),
+                ephemeral=True, allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     async def show_home(self, interaction):
         self.check(interaction)
-        await interaction.response.edit_message(content='**LaFamily**', embed=None, view=self.home_view(interaction),
-                                                allowed_mentions=discord.AllowedMentions.none())
+        with menu_card('home') as (embed, attachments):
+            await interaction.response.edit_message(
+                content='**LaFamily**', embed=embed, attachments=attachments, view=self.home_view(interaction),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     async def show_garden(self, interaction):
         self.check(interaction)
@@ -136,8 +144,10 @@ class FamilyMenu:
         if interaction.permissions.administrator:
             view.section('payouts')
         view.button('Назад', self.show_home, row=1)
-        await interaction.edit_original_response(content=None, embed=profile_card(user_id, data, subscriptions),
-                                                 view=view, allowed_mentions=discord.AllowedMentions.none())
+        await interaction.edit_original_response(
+            content=None, embed=profile_card(user_id, data, subscriptions), attachments=[], view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     async def show_history(self, interaction, page: int = 1):
         self.check(interaction)
@@ -189,8 +199,11 @@ class FamilyMenu:
             view.button('Служебная помощь', self.show_service_help, row=2)
         view.command('Каталог команд', 'команды', row=2)
         view.button('Назад', self.show_home, row=2)
-        await interaction.edit_original_response(content=None, embed=guide_embed(), view=view,
-                                                 allowed_mentions=discord.AllowedMentions.none())
+        with menu_card('help', guide_embed()) as (embed, attachments):
+            await interaction.edit_original_response(
+                content=None, embed=embed, attachments=attachments, view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     async def show_service_help(self, interaction, *, returning=False):
         commands = await self.available_help_commands(interaction)
@@ -204,8 +217,10 @@ class FamilyMenu:
         for index, key in enumerate(topics):
             view.button(TOPICS[key].title, partial(self.show_help_topic, key=key), row=index // 3)
         view.button('Назад', self.show_help, row=2)
-        await interaction.edit_original_response(content='**Служебная помощь**', embed=None, view=view,
-                                                 allowed_mentions=discord.AllowedMentions.none())
+        await interaction.edit_original_response(
+            content='**Служебная помощь**', embed=None, attachments=[], view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     async def show_help_topic(self, interaction, *, key, page=0):
         topic = TOPICS[key]
@@ -221,8 +236,10 @@ class FamilyMenu:
             view.button('Следующая страница', partial(turn_page, page=page + 1), disabled=page == last_page)
         back = partial(self.show_service_help, returning=True) if key in SERVICE_TOPICS else self.show_help
         view.button('Назад', back)
-        await interaction.edit_original_response(content=None, embed=help_topic_embed(topic, commands, page), view=view,
-                                                 allowed_mentions=discord.AllowedMentions.none())
+        await interaction.edit_original_response(
+            content=None, embed=help_topic_embed(topic, commands, page), attachments=[], view=view,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     async def show_section(self, interaction, *, name):
         admin = name in ADMIN_SECTIONS
@@ -253,6 +270,8 @@ class FamilyMenu:
                 await self.invoke(current, 'скупщик история', item=item)
 
             view.select(select, history)
+        elif name == 'barn':
+            view.button('Записать сбор', partial(open_barn_form, self))
         elif name == 'admin':
             view.section('channels')
             view.section('diagnostics')
@@ -297,8 +316,11 @@ class FamilyMenu:
             view.select(select, choose)
             back = partial(self.show_section, name=PICKER_PARENTS[name])
         view.button('Назад', back, row=2)
-        await interaction.response.edit_message(content=f'**{TITLES[name]}**', embed=None, view=view,
-                                                allowed_mentions=discord.AllowedMentions.none())
+        with menu_card(name if name in {'prices', 'barn'} else None) as (embed, attachments):
+            await interaction.response.edit_message(
+                content=f'**{TITLES[name]}**', embed=embed, attachments=attachments, view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
 
     async def publish_guide(self, interaction, channel_id):
         await interaction.response.defer(ephemeral=True, thinking=True)

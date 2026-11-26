@@ -8,6 +8,7 @@ import discord
 from lafamily.async_database import database_call
 from lafamily.errors import UserError
 from lafamily.modules.events.ui import report_embed
+from lafamily.modules.menu_cards import menu_card
 from lafamily.permissions import check_access, require_access_async
 from lafamily.responses import send_error
 
@@ -108,15 +109,12 @@ def can(interaction, settings, access):
     return True
 
 
-async def show_screen(interaction, *, view, content=None, embed=None):
-    if interaction.response.is_done():
-        await interaction.edit_original_response(
-            content=content, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none(),
-        )
-    else:
-        await interaction.response.edit_message(
-            content=content, embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none(),
-        )
+async def show_screen(interaction, *, view, content=None, embed=None, image=None):
+    edit = (interaction.edit_original_response if interaction.response.is_done()
+            else interaction.response.edit_message)
+    with menu_card(image, embed) as (embed, attachments):
+        await edit(content=content, embed=embed, attachments=attachments, view=view,
+                   allowed_mentions=discord.AllowedMentions.none())
 
 
 def number_fields():
@@ -163,7 +161,7 @@ async def open_event_menu(menu, interaction):
         view.form("Закрыть запись", "Закрыть запись", number_fields,
                   partial(number_action, menu, path="мп запись закрыть"), access="manager", row=1)
     view.button("Назад", menu.show_home, row=2)
-    await show_screen(interaction, content="**Мероприятия**", view=view)
+    await show_screen(interaction, content="**Мероприятия**", view=view, image="events")
 
 
 async def open_saved_report(menu, interaction, number, *, back=None):

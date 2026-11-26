@@ -1,4 +1,5 @@
 import unittest
+from tempfile import TemporaryDirectory
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -39,6 +40,12 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.menu.open(self.request)
         return self.request.response.send_message.await_args.kwargs['view']
 
+    def assert_card(self, payload, name, *, opening=False):
+        files = payload['files' if opening else 'attachments']
+        filename = f'{name}.jpg'
+        self.assertEqual([file.filename for file in files], [filename])
+        self.assertEqual(payload['embed'].image.url, f'attachment://{filename}')
+
     def add_points(self):
         user_id = '300000000000000000'
         self.request.user.id = int(user_id)
@@ -53,6 +60,7 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         await launcher.open.callback(self.request)
         payload = self.request.response.send_message.await_args.kwargs
         self.assertTrue(payload['ephemeral'])
+        self.assert_card(payload, 'home', opening=True)
         view = payload['view']
         self.assertEqual([(b.label, b.row) for b in view.children], [
             ('Профиль', 0), ('Мероприятия', 0), ('Сад', 0),
@@ -64,13 +72,52 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         card = self.request.edit_original_response.await_args.kwargs
         self.assertEqual(card['view'].owner, 3)
         self.assertTrue(card['embed'].fields)
+        self.assert_card(card, 'garden')
         await self.click(card['view'], 'Обновить')
-        refreshed = self.request.edit_original_response.await_args.kwargs['view']
-        await self.click(refreshed, 'Назад')
-        self.assertEqual(self.request.response.edit_message.await_args.kwargs['content'], '**LaFamily**')
+        refreshed = self.request.edit_original_response.await_args.kwargs
+        self.assert_card(refreshed, 'garden')
+        await self.click(refreshed['view'], 'Назад')
+        returned = self.request.response.edit_message.await_args.kwargs
+        self.assertEqual(returned['content'], '**LaFamily**')
+        self.assert_card(returned, 'home')
         self.request.user.id = 4
         with self.assertRaises(UserError):
             await view.interaction_check(self.request)
+
+    async def test_card_navigation_uploads_only_the_current_image(self):
+        command = self.bot.tree.get_command('меню', guild=discord.Object(id=2))
+        await command.callback(self.request)
+        payload = self.request.response.send_message.await_args.kwargs
+        self.assertTrue(payload['ephemeral'])
+        self.assert_card(payload, 'home', opening=True)
+        home = payload['view']
+
+        for label, name in [('Мероприятия', 'events'), ('Скупщик', 'prices'), ('Коровник', 'barn')]:
+            with self.subTest(section=label):
+                await self.click(home, label)
+                section = self.request.response.edit_message.await_args.kwargs
+                self.assert_card(section, name)
+                await self.click(section['view'], 'Назад')
+                returned = self.request.response.edit_message.await_args.kwargs
+                self.assert_card(returned, 'home')
+                home = returned['view']
+
+        await self.click(home, 'Профиль')
+        profile = self.request.edit_original_response.await_args.kwargs
+        self.assertEqual(profile['attachments'], [])
+        self.assertIsNone(profile['embed'].image.url)
+
+    async def test_missing_picture_keeps_menu_usable(self):
+        with TemporaryDirectory() as folder, patch('lafamily.modules.menu_cards.CARD_DIR', Path(folder)), \
+                patch('lafamily.modules.menu_cards.log_error') as log_error:
+            home = await self.open_home()
+            self.assertEqual(self.request.response.send_message.await_args.kwargs['files'], [])
+            await self.click(home, 'Скупщик')
+            section = self.request.response.edit_message.await_args.kwargs
+            self.assertEqual(section['attachments'], [])
+            self.assertEqual(section['content'], '**Скупщик**')
+            self.assertIn('Подписки', [getattr(item, 'label', None) for item in section['view'].children])
+            self.assertEqual(log_error.call_count, 2)
 
     async def test_private_admin_navigation_rechecks_rights_and_restore(self):
         self.request.permissions = discord.Permissions(administrator=True)
@@ -78,7 +125,9 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         await cmd.callback(self.request)
         home = self.request.response.send_message.await_args.kwargs['view']
         await next(b for b in home.children if b.label == 'Администрирование').callback(self.request)
-        admin = self.request.response.edit_message.await_args.kwargs['view']
+        payload = self.request.response.edit_message.await_args.kwargs
+        self.assertEqual(payload['attachments'], [])
+        admin = payload['view']
         self.request.permissions = discord.Permissions.none()
         with self.assertRaises(UserError):
             await admin.interaction_check(self.request)
@@ -111,6 +160,7 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         await self.click(await self.open_home(), 'Помощь')
         help_screen = self.request.edit_original_response.await_args.kwargs
         self.assertIn('Памятка', help_screen['embed'].title)
+        self.assert_card(help_screen, 'help')
         self.assertEqual([(button.label, button.row) for button in help_screen['view'].children], [
             ('Баллы', 0), ('Мероприятия', 0), ('Сад', 0),
             ('Скупщик', 1), ('Коровник', 1), ('Вступление и роли', 1),
@@ -119,6 +169,8 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         await self.click(help_screen['view'], 'Сад')
         garden = self.request.edit_original_response.await_args.kwargs
         self.assertIn('PayDay', garden['embed'].description)
+        self.assertEqual(garden['attachments'], [])
+        self.assertIsNone(garden['embed'].image.url)
         self.assertEqual([field.name for field in garden['embed'].fields], ['/сад'])
         self.assertEqual(garden['allowed_mentions'].to_dict(), {'parse': []})
         self.request.user.id = 4
@@ -252,6 +304,8 @@ class FamilyMenuTests(unittest.IsolatedAsyncioTestCase):
         receiver = SimpleNamespace(id=400000000000000000, bot=False)
         self.request.guild.fetch_member = AsyncMock(return_value=receiver)
         await self.click(await self.open_home(), 'Коровник')
+        self.request.response.send_modal.assert_not_awaited()
+        await self.click(self.section(), 'Записать сбор')
         modal = self.request.response.send_modal.await_args.args[0]
         modal.children[0].component._value = '+157к'
         user_select = modal.children[1].component

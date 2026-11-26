@@ -8,3 +8,4 @@
 !lafamily/**/
 !lafamily/**/*.py
 !lafamily/modules/prices/limits.json
+!lafamily/assets/menu/*.jpg

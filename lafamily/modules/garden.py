@@ -7,6 +7,7 @@ from discord.ext import tasks
 from lafamily.async_database import database_call
 from lafamily.garden_store import CROPS, GardenStore, hour_at
 from lafamily.errors import UserError
+from lafamily.modules.menu_cards import menu_card
 from lafamily.responses import send_error
 from lafamily.diagnostics import log_error
 
@@ -200,7 +201,7 @@ class PlantModal(discord.ui.Modal, title='Добавить посадку'):
         await interaction.response.defer(ephemeral=True)
         await database_call(self.service.store,'garden_plant',str(self.service.guild_id),str(self.owner),str(interaction.id),{self.crop:int(quantity)},remaining=remaining)
         embed,view=await self.service.card(self.owner,back=self.back)
-        await interaction.edit_original_response(content='Посадка сохранена.',embed=embed,view=view)
+        await edit_garden_card(interaction, embed, view, content='Посадка сохранена.')
 
     async def on_error(self, interaction, error):
         await send_error(interaction,error)
@@ -225,7 +226,8 @@ class CorrectPaydayModal(discord.ui.Modal, title='Исправить PayDay'):
         await database_call(self.service.store,'garden_correct_remaining',str(self.service.guild_id),str(self.owner),
                             self.row['id'],int(text),self.row,str(interaction.id),self.service.clock)
         embed,view=await self.service.card(self.owner,self.row['id'],back=self.back)
-        await interaction.edit_original_response(content='Остаток PayDay сохранён. Обработку текущего часа отметьте отдельно.',embed=embed,view=view)
+        await edit_garden_card(interaction, embed, view,
+                               content='Остаток PayDay сохранён. Обработку текущего часа отметьте отдельно.')
 
     async def on_error(self,interaction,error):
         await send_error(interaction,error)
@@ -265,7 +267,7 @@ class GardenView(discord.ui.View):
     async def refresh(self,interaction,content=None):
         if not interaction.response.is_done(): await interaction.response.defer()
         embed,view=await self.service.card(self.owner,self.selected,back=self.back)
-        await interaction.edit_original_response(content=content,embed=embed,view=view)
+        await edit_garden_card(interaction, embed, view, content=content)
 
     @discord.ui.button(label='Посадить',style=discord.ButtonStyle.success,row=1)
     async def plant(self,interaction,button):
@@ -309,10 +311,12 @@ async def show_garden(service,interaction,*,back=None):
     else:
         await interaction.response.defer()
     embed,view=await service.card(interaction.user.id,back=back)
-    if back is None:
-        await interaction.edit_original_response(embed=embed,view=view)
-    else:
-        await interaction.edit_original_response(content=None,embed=embed,view=view)
+    await edit_garden_card(interaction, embed, view)
+
+
+async def edit_garden_card(interaction, embed, view, *, content=None):
+    with menu_card('garden' if view.back is not None else None, embed) as (embed, attachments):
+        await interaction.edit_original_response(content=content, embed=embed, attachments=attachments, view=view)
 
 
 def register_garden(tree,service,guild_id):
