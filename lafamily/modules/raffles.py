@@ -19,13 +19,16 @@ class RafflePortal:
     def __init__(self, guild_id):
         self.guild_id = guild_id
 
-    async def request(self, action, **fields):
+    def credentials(self):
         url = urlsplit(os.getenv('FAMILY_BOT_SYNC_URL', '').strip())
         token = os.getenv('FAMILY_BOT_SYNC_TOKEN', '').strip()
         if (url.scheme != 'https' or not url.hostname or url.username or url.password or url.query or url.fragment
                 or not token or os.getenv('FAMILY_BOT_GUILD_ID') != str(self.guild_id)):
             raise UserError('Связь с розыгрышами портала не настроена.')
-        origin = f'{url.scheme}://{url.netloc}'
+        return f'{url.scheme}://{url.netloc}', token
+
+    async def request(self, action, **fields):
+        origin, token = self.credentials()
         headers = {'Origin': origin, 'Authorization': 'Bearer ' + token}
         payload = dict(action=action, guildId=str(self.guild_id), **fields)
         try:

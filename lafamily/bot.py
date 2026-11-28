@@ -9,6 +9,7 @@ from discord import app_commands
 
 from lafamily.config import Config
 from lafamily.portal_sync import PortalSync
+from lafamily.modules.raffle_announcements import RaffleAnnouncements
 from lafamily.modules.raffles import RaffleButton, RafflePortal, register_raffles
 from lafamily.modules.database_backups import DatabaseBackups, register_database_backups
 from lafamily.modules.insights import register_insights
@@ -70,6 +71,7 @@ class FamilyBot(discord.Client):
         self.planning_card_lock = asyncio.Lock()
         self.portal_sync = PortalSync(self)
         self.raffles = RafflePortal(config.guild_id)
+        self.raffle_announcements = RaffleAnnouncements(self, self.raffles)
         self.announcements = AnnouncementService(self, store, config.guild_id)
         self.tree = FamilyTree(self, fallback_to_global=False)
         install_commands(self.tree, self.events, config.guild_id)
@@ -147,6 +149,7 @@ class FamilyBot(discord.Client):
             except Exception as error:
                 log_error('Не удалось отправить результат восстановления БД', error)
         self.portal_sync.start()
+        self.raffle_announcements.start()
         self.backups.start()
         self.announcements.start()
         self.prices.queue.start()
@@ -163,6 +166,7 @@ class FamilyBot(discord.Client):
             log_error(f"Необработанная ошибка события {event_method}", error)
 
     async def close(self):
+        await self.raffle_announcements.close()
         await self.portal_sync.close()
         await self.garden.close()
         await self.health.close()
