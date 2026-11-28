@@ -11,6 +11,7 @@ from lafamily.config import Config
 from lafamily.portal_sync import PortalSync
 from lafamily.modules.raffle_announcements import RaffleAnnouncements
 from lafamily.modules.raffles import RaffleButton, RafflePortal, register_raffles
+from lafamily.modules.join_verification import JoinConfirmButton, JoinVerification
 from lafamily.modules.database_backups import DatabaseBackups, register_database_backups
 from lafamily.modules.insights import register_insights
 from lafamily.modules.planning import register_planning,SignupView
@@ -72,6 +73,7 @@ class FamilyBot(discord.Client):
         self.portal_sync = PortalSync(self)
         self.raffles = RafflePortal(config.guild_id)
         self.raffle_announcements = RaffleAnnouncements(self, self.raffles)
+        self.join_verification = JoinVerification(self, config.guild_id)
         self.announcements = AnnouncementService(self, store, config.guild_id)
         self.tree = FamilyTree(self, fallback_to_global=False)
         install_commands(self.tree, self.events, config.guild_id)
@@ -100,7 +102,7 @@ class FamilyBot(discord.Client):
 
     async def setup_hook(self):
         self.add_view(MenuLauncher(self.menu))
-        self.add_dynamic_items(GardenReminderButton, RaffleButton)
+        self.add_dynamic_items(GardenReminderButton, RaffleButton, JoinConfirmButton)
         # Постоянные кнопки продолжают работать после перезапуска.
         self.add_view(EntryView(self.onboarding))
         self.add_view(ReviewView(self.onboarding))
@@ -150,6 +152,7 @@ class FamilyBot(discord.Client):
                 log_error('Не удалось отправить результат восстановления БД', error)
         self.portal_sync.start()
         self.raffle_announcements.start()
+        self.join_verification.start()
         self.backups.start()
         self.announcements.start()
         self.prices.queue.start()
@@ -166,6 +169,7 @@ class FamilyBot(discord.Client):
             log_error(f"Необработанная ошибка события {event_method}", error)
 
     async def close(self):
+        await self.join_verification.close()
         await self.raffle_announcements.close()
         await self.portal_sync.close()
         await self.garden.close()

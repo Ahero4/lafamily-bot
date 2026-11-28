@@ -78,7 +78,7 @@ class RaffleTests(unittest.IsolatedAsyncioTestCase):
         response.json = AsyncMock(return_value={'raffles':[]})
         config=dict(FAMILY_BOT_SYNC_URL='https://example.invalid/api/integrations/family-bot',
                     FAMILY_BOT_SYNC_TOKEN='unit-secret', FAMILY_BOT_GUILD_ID=str(self.portal.guild_id))
-        with patch.dict('os.environ',config),patch('lafamily.modules.raffles.aiohttp.ClientSession',session):
+        with patch.dict('os.environ',config),patch('lafamily.portal_endpoint.aiohttp.ClientSession',session):
             self.assertEqual(await self.portal.request('list'),{'raffles':[]})
             post.assert_called_once_with('https://example.invalid/api/integrations/family-bot/raffles',
                   headers={'Origin':'https://example.invalid','Authorization':'Bearer unit-secret'},
